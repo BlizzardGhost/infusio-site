@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+.pnpm-debug.log
+pnpm-lock.yaml
+
+# Build output
+dist/
+.vercel/
+.vite/
+
+# System files
+.DS_Store
+
+# Astro cache
+.astro/
