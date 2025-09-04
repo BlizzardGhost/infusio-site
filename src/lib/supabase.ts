@@ -1,12 +1,7 @@
+// src/lib/supabase.ts
 import { createClient } from '@supabase/supabase-js';
 
-export const supabaseAnon = createClient(
-  import.meta.env.SUPABASE_URL!,
-  import.meta.env.SUPABASE_ANON_KEY!
-);
+const url = import.meta.env.PUBLIC_SUPABASE_URL!;
+const anon = import.meta.env.PUBLIC_SUPABASE_ANON_KEY!;
 
-export const supabaseService = createClient(
-  import.meta.env.SUPABASE_URL!,
-  import.meta.env.SUPABASE_SERVICE_ROLE!,
-  { auth: { persistSession: false }, global: { headers: { 'X-Client-Info': 'infusio-site' } } }
-);
+export const supabase = createClient(url, anon);

@@ -1,7 +1,7 @@
 import { defineConfig } from 'astro/config';
+import vercel from '@astrojs/vercel/serverless'; // or /edge if you prefer
 
 export default defineConfig({
-  site: 'https://infusio.pro',
-  integrations: [],
-  output: 'static', // still allows API routes via /pages/api with Vercel adapter
+  output: 'hybrid',          // enables API routes
+  adapter: vercel(),
 });

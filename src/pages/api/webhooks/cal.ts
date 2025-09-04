@@ -1,17 +1,18 @@
 import type { APIRoute } from 'astro';
-import { supabaseService } from '../../lib/supabase';
+import { supabase } from '../../../lib/supabase';
 
-export const POST: APIRoute = async ({ request }) => {
-  // Verify signature if you configure it (Cal.com sends headers)
-  const payload = await request.json();
-  const evt = payload?.event || 'unknown';
-  const appt = payload?.payload || {};
-  await supabaseService.from('appointments').insert({
-    lead_id: null,
-    cal_event_id: appt?.id || '',
-    start: appt?.start_time,
-    end: appt?.end_time,
-    status: appt?.status || evt
-  });
-  return new Response('ok');
+export const post: APIRoute = async ({ request }) => {
+  try {
+    const data = await request.json();
+    console.log('Webhook received:', data);
+
+    // Example: insert into Supabase
+    const { error } = await supabase.from('webhooks').insert({ payload: data });
+    if (error) throw error;
+
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  } catch (err: any) {
+    console.error(err);
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+  }
 };
