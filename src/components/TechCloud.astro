@@ -1,0 +1,108 @@
+---
+type Item = { name: string; icon: string; href?: string };
+
+const stack: Item[] = [
+  // Core web
+  { name: "Astro",       icon: "simple-icons:astro", href: "https://astro.build" },
+  { name: "Vercel",      icon: "simple-icons:vercel", href: "https://vercel.com" },
+  { name: "Cloudflare",  icon: "simple-icons:cloudflare", href: "https://cloudflare.com" },
+  { name: "GitHub",      icon: "simple-icons:github", href: "https://github.com" },
+  { name: "Auth0",       icon: "simple-icons:auth0", href: "https://auth0.com" },
+  { name: "OpenSSL",     icon: "simple-icons:openssl", href: "https://www.openssl.org/" },
+
+  // Design & Ops
+  { name: "Adobe",       icon: "simple-icons:adobe", href: "https://www.adobe.com/express/" },
+  { name: "Figma",       icon: "simple-icons:figma", href: "https://figma.com" },
+  { name: "Replit",      icon: "simple-icons:replit", href: "https://replit.com" },
+  { name: "Lovable",     icon: "mdi:heart", href: "https://lovable.dev" }, // neutral icon
+
+  // Data / CRM / Analytics
+  { name: "HubSpot",     icon: "simple-icons:hubspot", href: "https://hubspot.com" },
+  { name: "Google Analytics", icon: "simple-icons:googleanalytics", href: "https://marketingplatform.google.com/about/analytics/" },
+  { name: "Plausible",   icon: "simple-icons:plausibleanalytics", href: "https://plausible.io" },
+  { name: "Stripe",      icon: "simple-icons:stripe", href: "https://stripe.com" },
+  { name: "Microsoft 365", icon: "simple-icons:microsoft", href: "https://www.microsoft.com/microsoft-365" },
+
+  // Automations & Integrations
+  { name: "SendGrid",    icon: "simple-icons:sendgrid", href: "https://sendgrid.com" },
+  { name: "Zapier",      icon: "simple-icons:zapier", href: "https://zapier.com" },
+  { name: "Pipedream",   icon: "carbon:pipelines", href: "https://pipedream.com" },
+  { name: "Make.com",    icon: "simple-icons:make", href: "https://www.make.com" },
+  { name: "n8n",         icon: "simple-icons:n8n", href: "https://n8n.io" },
+  { name: "Telegram",    icon: "simple-icons:telegram", href: "https://core.telegram.org" },
+  { name: "WhatsApp",    icon: "simple-icons:whatsapp", href: "https://business.whatsapp.com/products/business-platform" },
+
+  // AI Layer
+  { name: "ChatGPT",     icon: "simple-icons:openai", href: "https://chat.openai.com" },
+  { name: "Mistral",     icon: "simple-icons:mistralai", href: "https://mistral.ai" },
+  { name: "Gemini",      icon: "simple-icons:googlegemini", href: "https://gemini.google.com/app" },
+  { name: "ElevenLabs",  icon: "simple-icons:elevenlabs", href: "https://elevenlabs.io" },
+  { name: "Sora",        icon: "mdi:play-circle-outline" },  // illustrative
+  { name: "Genspark",    icon: "mdi:sparkles" }             // illustrative
+];
+---
+
+<section id="tech" class="section wrap" aria-labelledby="tech-title">
+  <h2 id="tech-title" style="margin:0 0 24px;">Our Tech Cloud</h2>
+  <p class="hero-sub" style="max-width:60ch;margin:0 0 24px;">
+    Future-proof by design — the platforms we infuse into every brew.
+  </p>
+
+  <div class="tech-cloud" role="list">
+    {stack.map((t) => (
+      t.href ? (
+        <a class="logo-tile" role="listitem" href={t.href} target="_blank" rel="noopener noreferrer" aria-label={t.name}>
+          <span class="iconify" data-icon={t.icon} aria-hidden="true"></span>
+          <span class="label">{t.name}</span>
+        </a>
+      ) : (
+        <div class="logo-tile" role="listitem" aria-label={t.name} tabindex="0">
+          <span class="iconify" data-icon={t.icon} aria-hidden="true"></span>
+          <span class="label">{t.name}</span>
+        </div>
+      )
+    ))}
+  </div>
+</section>
+
+<style>
+  .tech-cloud{
+    display:grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 18px 16px;
+    align-items:stretch;
+  }
+  .logo-tile{
+    position:relative;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    gap:10px;
+    padding:18px 14px;
+    border-radius:14px;
+    background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255,255,255,.09);
+    box-shadow: 0 10px 30px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.06);
+    text-align:center;
+    color:#aef1df;
+    transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
+    outline: none;
+  }
+  .logo-tile:hover,
+  .logo-tile:focus-visible{
+    transform: translateY(-2px);
+    border-color: rgba(45,212,191,.35);
+    background: linear-gradient(180deg, rgba(45,212,191,.08), rgba(255,255,255,.03));
+    box-shadow: 0 14px 36px rgba(0,0,0,.38), 0 0 64px rgba(45,212,191,.10) inset;
+  }
+  .logo-tile .iconify{
+    font-size:56px; line-height:1;
+    color:#2dd4bf;
+    filter: drop-shadow(0 4px 18px rgba(45,212,191,.25));
+    opacity:.95;
+  }
+  .logo-tile .label{
+    font-size:.9rem; letter-spacing:.01em; color: rgba(173,245,226,.9); user-select:none;
+  }
+  @media (max-width:680px){ .logo-tile .iconify{ font-size:44px } }
+  @media (prefers-reduced-motion: reduce){ .logo-tile{ transition:none } }
+</style>

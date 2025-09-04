@@ -1,0 +1,28 @@
+---
+// /src/components/Footer.astro
+const year = new Date().getFullYear()
+
+// Easter-egg lines
+const messages = [
+  "Brewed in LATAM, served worldwide. Clarity is timeless.",
+  "Every brew is a ritual. Every line of code, a promise.",
+  "Future-proofed websites, steeped in calm.",
+  "One sip, one click, peace of mind infused.",
+  "Crafted for today. Tasting notes from tomorrow."
+]
+const randomMsg = messages[Math.floor(Math.random() * messages.length)]
+---
+<footer class="site-footer" aria-label="Footer">
+  <div class="wrap">
+    <small>
+      © {year} INFUSIO • {randomMsg}
+    </small>
+    <div class="foot-links">
+      <a href="#brews">Brews</a>
+      <a href="#clients">Clients</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/sitemap.xml">Sitemap</a>
+      <a href="/robots.txt">Robots.txt</a>
+    </div>
+  </div>
+</footer>

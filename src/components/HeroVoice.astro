@@ -1,0 +1,22 @@
+---
+// src/components/HeroVoice.astro
+const title   = 'Infuse your business with calm, clarity, and AI.';
+const subtitle = 'Websites are only the vessel. What we craft is peace of mind — brewed on solid foundations, guided by a Sherpa who ensures your brand is ready for the storms ahead.';
+const prompt  = 'Click the orb and talk. Our AI Receptionist will answer out loud or book a call.';
+---
+<section id="top" class="hero-full hero--centered" aria-label="Hero">
+  <div class="hero-inner">
+    <span class="badge">AI-Powered • Astro + Vercel • Future Proof</span>
+    <h1 class="hero-title">{title}</h1>
+    <p class="hero-sub">{subtitle}</p>
+
+    <!-- Single CTA: the voice orb -->
+    <button id="voice-orb" class="voice-orb" aria-label="Talk to the AI Receptionist">
+      <span class="pulse" aria-hidden="true"></span>
+      <span class="glow" aria-hidden="true"></span>
+      <span class="iconify" data-icon="mingcute:voice-line" aria-hidden="true"></span>
+    </button>
+
+    <p id="voice-status" class="voice-status" role="status" aria-live="polite">{prompt}</p>
+  </div>
+</section>

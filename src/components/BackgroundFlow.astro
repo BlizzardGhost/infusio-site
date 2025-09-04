@@ -1,0 +1,29 @@
+---
+/** Fixed background container. Fog + custom tendrils canvas (no polygon net). */
+---
+<div class="flow-bg" aria-hidden="true">
+  <canvas id="tendrils" class="flow-layer"></canvas>
+  <div id="vanta-fog" class="flow-layer"></div>
+</div>
+
+<!-- importer only; the heavy code lives in bundled TS -->
+<script type="module">
+  import initBackgroundFlow from '/src/scripts/background-flow.ts';
+  initBackgroundFlow();
+</script>
+
+<style>
+  .flow-bg{
+    position:fixed; inset:0; z-index:-10; pointer-events:none;
+    overflow:clip; isolation:isolate;
+    background: linear-gradient(#0e1113, #0b0f11);
+  }
+  .flow-layer{
+    position:absolute; inset:0; 
+    width:100%; height:100%; display:block;
+  }
+  .flow-bg::after{
+    content:""; position:absolute; inset:0;
+    background: radial-gradient(1200px 700px at 50% 50%, transparent 70%, rgba(0,0,0,.32) 100%);
+  }
+</style>

@@ -1,0 +1,108 @@
+---
+// /src/components/Modal.astro
+// Accessible <dialog> wrapper with slotted content
+// Props:
+//  - id: string (required)
+//  - labelledby?: string (optional)
+const { id, labelledby } = Astro.props as { id: string; labelledby?: string };
+---
+<dialog id={id} class="brew-modal" aria-labelledby={labelledby}>
+  <form method="dialog" class="modal-card" role="document">
+    <button class="modal-x" aria-label="Close" type="submit">&times;</button>
+    <slot />
+  </form>
+</dialog>
+
+<style is:global>
+  /* Lock page scroll when any modal is open */
+  body.modal-open { overflow: hidden; }
+</style>
+
+<style>
+  /* Center the dialog and cap its size */
+  .brew-modal{
+    margin: auto;
+    border: 0;
+    padding: 0;
+    width: min(820px, 92vw);
+    max-height: 86vh;
+    background: transparent;
+  }
+  .brew-modal::backdrop{
+    background: rgba(0,0,0,.6);
+    backdrop-filter: blur(6px);
+    opacity: 0;
+    transition: opacity .18s ease;
+  }
+  .brew-modal[open]::backdrop{ opacity: 1 }
+
+  .modal-card{
+    background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.03));
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+    color: var(--ink);
+    position: relative;
+    overflow: auto;
+    max-height: inherit;
+
+    /* subtle pop-in */
+    opacity: 0;
+    transform: translateY(6px) scale(.98);
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  .brew-modal[open] .modal-card{
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  .modal-x{
+    position:absolute; top:8px; right:10px;
+    width:34px; height:34px; border-radius:10px;
+    border:1px solid rgba(255,255,255,.18);
+    background:rgba(255,255,255,.06); color:#dff9f1;
+    cursor:pointer;
+  }
+  .modal-x:hover{ background:rgba(255,255,255,.10) }
+  .modal-x:focus-visible{ outline:2px solid var(--accent); outline-offset:2px }
+
+  @media (max-width:560px){
+    .modal-card{ padding: 14px }
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    .brew-modal::backdrop,
+    .modal-card{ transition:none }
+  }
+</style>
+
+<script type="module">
+  // Enhance: click-outside-to-close, scroll lock, and focus nudge
+  const dialog = document.getElementById({id: JSON.stringify(id)}); // keep id literal at build
+  if (dialog instanceof HTMLDialogElement) {
+    // Click outside the form closes the dialog
+    dialog.addEventListener('mousedown', (e) => {
+      if (e.target === dialog) dialog.close();
+    });
+
+    // Toggle body scroll lock when dialog opens/closes
+    const updateBody = () => {
+      document.body.classList.toggle('modal-open', dialog.open);
+      // If nothing focused on open, focus the close button
+      if (dialog.open && !dialog.contains(document.activeElement)) {
+        const x = dialog.querySelector('.modal-x');
+        if (x) (x as HTMLButtonElement).focus();
+      }
+    };
+
+    // React to <dialog open> attribute changes
+    const mo = new MutationObserver(updateBody);
+    mo.observe(dialog, { attributes: true, attributeFilter: ['open'] });
+
+    dialog.addEventListener('close', updateBody);
+    dialog.addEventListener('cancel', updateBody); // Esc key
+    // Initial state (in case opened by SSR hydration timing)
+    updateBody();
+  }
+</script>

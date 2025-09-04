@@ -1,0 +1,56 @@
+---
+// src/layouts/Base.astro
+import '../styles/global.css';
+import Analytics from '@vercel/analytics/astro';
+import BackgroundFlow from '../components/BackgroundFlow.astro';
+
+const {
+  title = 'INFUSIO — Human-first AI systems',
+  description = 'We brew clarity: fast sites, ethical AI, and a calm cockpit for your business.',
+  ogImage = '/icons/placeholder.svg'
+} = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="canonical" href={Astro.url} />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;600;700&display=swap" rel="stylesheet" />
+
+    <!-- SEO -->
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:url" content={Astro.url} />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- Icons / PWA -->
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <meta name="theme-color" content="#0e1113" />
+
+    <!-- Iconify (inline SVG icons) -->
+    <script src="https://code.iconify.design/3/3.1.1/iconify.min.js" defer></script>
+  </head>
+  <body>
+  <!-- Site-wide flowing background -->
+    <BackgroundFlow />
+
+    <slot />
+
+    <!-- Voice receptionist only -->
+    <script src="/scripts/voice-receptionist.js" defer></script>
+
+    <!-- Vercel Analytics -->
+    <Analytics />
+
+  </body>
+</html>

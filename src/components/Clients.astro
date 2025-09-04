@@ -1,0 +1,92 @@
+---
+type Client = {
+  title: string
+  img: string   // /public/clients/*
+  href?: string
+  tag: string   // industry/vertical
+}
+
+const clients: Client[] = [
+  {
+    title: "KidsLab",
+    img: "/clients/kidslab-lat.png",
+    href: "https://kidslab.lat",
+    tag: "Education"
+  },
+  {
+    title: "Hero Wall",
+    img: "/clients/hero-wall.png",
+    href: "https://hero-wall-mvp.vercel.app/",
+    tag: "Personal Brand"
+  },
+  {
+    title: "Dream Foundation",
+    img: "/clients/dream-foundation.png",
+    href: "https://nydreamfoundation.org/",
+    tag: "NGO"
+  },
+  {
+    title: "Camp David",
+    img: "/clients/camp-david.png",
+    href: "https://camp-david-mvp.vercel.app/",
+    tag: "Hospitality"
+  },
+  {
+    title: "Esencia Branding",
+    img: "/clients/esencia.png",
+    href: "https://esenciabranding.com",
+    tag: "Design"
+  },
+  {
+    title: "KBG Commercial",
+    img: "/clients/kbg.png",
+    href: "https://kbgcommercial.com/",
+    tag: "Freight Shipping"
+  }
+]
+---
+
+<section id="clients" class="section wrap" aria-labelledby="clients-title">
+  <h2 id="clients-title" style="margin:0 0 24px;">Selected Clients</h2>
+  <p class="hero-sub" style="max-width:60ch;margin:0 0 24px;">
+    A few partners who trusted our brews — from schools to NGOs, law firms, and hospitality.
+  </p>
+
+  <div class="grid-3">
+    {clients.map((c) => (
+      c.href ? (
+        <a
+          class="card client-card"
+          href={c.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`Visit ${c.title}`}
+        >
+          <div class="client-img">
+            <img 
+              src={c.img} 
+              alt={`${c.title} website screenshot`} 
+              loading="lazy" 
+              decoding="async" 
+            />
+          </div>
+          <p class="client-title">{c.title}</p>
+          <span class="client-tag">{c.tag}</span>
+        </a>
+      ) : (
+        <div class="card client-card">
+          <div class="client-img">
+            <img 
+              src={c.img} 
+              alt={`${c.title} website screenshot`} 
+              loading="lazy" 
+              decoding="async" 
+            />
+          </div>
+          <p class="client-title">{c.title}</p>
+          <span class="client-tag">{c.tag}</span>
+        </div>
+      )
+    ))}
+  </div>
+</section>

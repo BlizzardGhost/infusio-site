@@ -1,0 +1,17 @@
+{
+  "name": "infusio-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "@vercel/analytics": "^1.5.0",
+    "astro": "^5.13.5",
+    "three": "^0.179.1",
+    "vanta": "^0.5.24"
+  }
+}

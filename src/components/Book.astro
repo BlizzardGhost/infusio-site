@@ -1,0 +1,19 @@
+---
+/**
+ * Book.astro
+ * Contact / booking section above the footer.
+ * Uses the shared "section-head" header style and ReceptionistPanel field.
+ */
+import ReceptionistPanel from "./ReceptionistPanel.astro";
+---
+
+<section id="book" class="section section--tight wrap" aria-labelledby="book-title">
+  <header class="section-head">
+    <!-- Keep aspect ratio: control height only -->
+    <img src="/logo.webp" alt="" class="section-logo" loading="lazy" />
+    <h2 id="book-title" class="section-title">Let’s brew something calm</h2>
+    <p class="section-subtle">Tell our receptionist what you need. We’ll reply within a day — usually faster.</p>
+  </header>
+
+  <ReceptionistPanel actionUrl="/api/lead" />
+</section>

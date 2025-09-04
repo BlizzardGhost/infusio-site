@@ -1,0 +1,127 @@
+---
+import Modal from "./Modal.astro";
+import type { Brew } from "../types/brew";
+
+const { brew } = Astro.props as { brew: Brew };
+const dialogId = `modal-${brew.id}`;
+const labelId = `modal-${brew.id}-title`;
+---
+<Modal id={dialogId} labelledby={labelId}>
+  <header class="modal-head">
+    <div class="icon big">
+      <span class="iconify" data-icon={brew.icon} aria-hidden="true"></span>
+    </div>
+    <div class="mh">
+      <h3 id={labelId} class="modal-title">{brew.tea} — {brew.tier}</h3>
+      <p class="modal-tag">{brew.tagline}</p>
+    </div>
+  </header>
+
+  {brew.blurb && <p class="modal-blurb">{brew.blurb}</p>}
+
+  <!-- New: 1 + 1/2 + 1/2 grid -->
+  <div class="modal-grid" role="group" aria-labelledby={labelId}>
+    <!-- Left (spans two rows): Features -->
+    <section class="panel features" aria-label="What’s inside">
+      <h4 class="modal-sub">What’s inside</h4>
+      <ul class="feature-list">
+        {brew.features.map((f) => <li>{f}</li>)}
+      </ul>
+    </section>
+
+    <!-- Right top: SLA -->
+    <section class="panel sla" aria-label="Service Level">
+      <h4 class="modal-sub">Service Level</h4>
+      <p class="sla-text">
+        {brew.sla
+          ? brew.sla
+          : (brew.id === 'mint'
+              ? 'Trial support is community-only (email reference docs).'
+              : (brew.id === 'earl'
+                  ? 'Regular support: 48–72 hours.'
+                  : 'Priority support: 12–24 hours.'
+                )
+            )
+        }
+      </p>
+    </section>
+
+    <!-- Right bottom: Pricing -->
+    <section class="panel pricing" aria-label="Pricing">
+      <h4 class="modal-sub">Pricing</h4>
+      <p class="price-line">
+        {brew.id === 'mint'
+          ? <>Free for 14 days<span class="sep"> · </span>Auto-pauses at day 14</>
+          : <>
+              {brew.setup}
+              {brew.monthly ? <><span class="sep"> · </span>{brew.monthly}</> : null}
+            </>
+        }
+      </p>
+    </section>
+  </div>
+
+  <div class="modal-cta">
+    <a href={brew.ctaHref ?? '#book'} class="btn btn-primary">Get Started</a>
+  </div>
+</Modal>
+
+<style>
+  .modal-head{ display:flex; align-items:center; gap:12px; margin:2px 0 8px; }
+  .icon.big{
+    width:56px; height:56px; border-radius:14px;
+    display:grid; place-items:center;
+    background: radial-gradient(80px 60px at 50% 40%, rgba(45,212,191,.18), rgba(255,255,255,.04));
+    border:1px solid rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 8px 22px rgba(0,0,0,.28);
+  }
+  .icon.big .iconify{ font-size:30px }
+  .modal-title{ margin:0; font-size:1.25rem; letter-spacing:.005em }
+  .modal-tag{ margin:2px 0 0; color:var(--muted-2) }
+  .modal-blurb{ margin:10px 0 14px; color:#d9f6ee }
+
+  /* Grid: features spans two rows; SLA + Pricing stack on right */
+  .modal-grid{
+    display:grid;
+    grid-template-columns: 1.25fr .85fr;
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      "features sla"
+      "features pricing";
+    gap: 12px;
+  }
+  .panel{
+    background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .features{ grid-area: features; min-height:220px }
+  .sla{ grid-area: sla }
+  .pricing{ grid-area: pricing }
+
+  .modal-sub{ margin:0 0 6px; font-size:1rem }
+  .feature-list{ margin:0; padding-left:18px }
+  .feature-list li{ margin:6px 0; line-height:1.5 }
+
+  .sla-text{ margin:0 0 4px; color:#cfe9d9 }
+  .price-line{ margin:0; color:#aef1df; font-weight:600 }
+  .price-line .sep{ opacity:.6 }
+
+  /* Center CTA */
+  .modal-cta{ display:flex; justify-content:center; margin-top:12px; }
+
+  @media (max-width:680px){
+    .icon.big{ width:48px; height:48px }
+    .modal-title{ font-size:1.1rem }
+    .modal-grid{
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto auto;
+      grid-template-areas:
+        "features"
+        "sla"
+        "pricing";
+    }
+    .modal-cta .btn{ width:100% }
+  }
+</style>

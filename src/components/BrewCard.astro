@@ -1,0 +1,84 @@
+---
+import type { Brew } from "../types/brew";
+
+const { brew } = Astro.props as { brew: Brew };
+---
+<button
+  type="button"
+  class="brew-link"
+  role="listitem"
+  aria-labelledby={`${brew.id}-title`}
+  data-modal={brew.id}
+>
+  <article class="card brew">
+    <div class="top">
+      <div class="icon">
+        <span class="iconify" data-icon={brew.icon} aria-hidden="true"></span>
+      </div>
+      <div class="headings">
+        <h3 id={`${brew.id}-title`} class="brew-name">{brew.tea}</h3>
+        <div class="tier" aria-label="Plan tier">{brew.tier}</div>
+      </div>
+    </div>
+
+    <p class="brew-tag">{brew.tagline}</p>
+    <p class="brew-blurb">{brew.blurb}</p>
+
+    <div class="spacer"></div>
+
+    <div class="brew-price" aria-live="polite">
+      {brew.id === 'mint'
+        ? <span class="cta-hint">GET STARTED</span>
+        : <>
+            {brew.setup && <span class="setup">{brew.setup}</span>}
+            {brew.monthly && <span class="sep"> · </span>}
+            {brew.monthly && <span class="mo">{brew.monthly}</span>}
+          </>
+      }
+    </div>
+  </article>
+</button>
+
+<style>
+  .brew-link{
+    appearance:none; background:none; border:0; padding:0; margin:0;
+    display:block; text-align:inherit; color:inherit; width:100%;
+    border-radius:16px; cursor:pointer;
+  }
+  .brew-link:focus-visible .brew{ outline:2px solid rgba(45,212,191,.45); outline-offset:2px; }
+
+  .brew{ position:relative; padding:24px; height:100%; display:flex; flex-direction:column; }
+  .top{ display:flex; align-items:center; gap:14px; margin-bottom:12px; }
+  .icon{
+    width:48px; height:48px; border-radius:12px; flex-shrink:0;
+    display:grid; place-items:center;
+    background: radial-gradient(80px 60px at 50% 40%, rgba(45,212,191,.18), rgba(255,255,255,.04));
+    border:1px solid rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 8px 22px rgba(0,0,0,.28);
+  }
+  .icon .iconify{ font-size:26px; color:#9df7d7 }
+
+  .headings{ display:flex; flex-direction:column; gap:6px; min-width:0 }
+  .brew-name{ margin:0; line-height:1.06; font-size:1.28rem; letter-spacing:.005em; }
+
+  .tier{
+    display:inline-flex; align-items:center; justify-content:center;
+    height:26px; padding:0 10px; border-radius:999px;
+    font-size:12px; letter-spacing:.04em; line-height:1; white-space:nowrap;
+    background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.10); color:#cfe9d9;
+    align-self:flex-start;
+  }
+
+  .brew-tag{ margin:10px 0 6px; color:var(--muted-2) }
+  .brew-blurb{ margin:0 0 10px; color:#d9f6ee }
+
+  .spacer{ flex:1 1 auto }
+
+  .brew-price{
+    margin-top:4px; color:#aef1df; font-weight:600; text-align:center;
+    border-top:1px dashed rgba(255,255,255,.08); padding-top:8px;
+    font-size:.92rem;
+  }
+  .brew-price .sep{ opacity:.6 }
+  .cta-hint{ letter-spacing:.12em; font-size:.82rem; text-transform:uppercase; color:#baf5e6 }
+</style>

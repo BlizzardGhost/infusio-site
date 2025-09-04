@@ -1,0 +1,65 @@
+---
+/**
+ * /src/components/Brews.astro
+ * Modular brews using data + components.
+ */
+import { brews } from "../data/brews";
+import BrewCard from "./BrewCard.astro";
+import BrewModal from "./BrewModal.astro";
+---
+
+<section id="brews" class="section wrap" aria-labelledby="brews-title">
+  <h2 id="brews-title" class="section-title" style="margin:0 0 10px;">The Brews</h2>
+  <p class="hero-sub" style="max-width:60ch;margin:0 0 28px;">
+    Choose your brew. <span class="sr-only">We’ll carry the heavy gear.</span><span aria-hidden="true">We’ll carry the heavy gear.</span>
+  </p>
+
+  <div class="grid-4" role="list">
+    {brews.map((b) => <BrewCard brew={b} />)}
+  </div>
+
+  {brews.map((b) => <BrewModal brew={b} />)}
+</section>
+
+<style>
+  .grid-4{
+    display:grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 22px;
+  }
+  @media (max-width: 1100px){ .grid-4{ grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px){ .grid-4{ grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  // Attach modal behavior to the #brews section
+  const root = document.getElementById('brews');
+  if (!root) { console.warn('[Brews] #brews section not found'); }
+  else {
+    // Open on card click
+    root.querySelectorAll('[data-modal]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-modal');
+        const dlg = root.querySelector(`#modal-${id}`);
+        if (!dlg) return;
+        if (typeof dlg.showModal === 'function') dlg.showModal();
+        else dlg.setAttribute('open', 'true'); // very old browsers
+      });
+    });
+
+    // Backdrop click closes
+    root.querySelectorAll('dialog').forEach((dlg) => {
+      dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close?.(); });
+
+      // Close dialog when CTA is clicked (since <dialog> doesn't auto-close on link nav)
+      dlg.querySelector('.btn-primary')?.addEventListener('click', () => dlg.close?.());
+    });
+
+    // Escape to close (delegated)
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        root.querySelectorAll('dialog[open]')?.forEach((d) => d.close?.());
+      }
+    });
+  }
+</script>

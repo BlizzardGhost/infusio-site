@@ -1,0 +1,104 @@
+---
+/* src/components/Header.astro */
+const nav = [
+  { href: '#brews',   label: 'Brews' },
+  { href: '#clients', label: 'Clients' },
+  { href: '#tech',    label: 'Integrations' },
+];
+---
+<header class="site-head fixed" aria-label="Primary">
+  <div class="head-pill">
+    <!-- Brand -->
+    <a class="brand" href="#top" aria-label="Infusio home">
+      <img
+        src="/logo.webp"
+        alt="Infusio"
+        width="22"
+        height="22"
+        decoding="async"
+        loading="eager"
+      />
+      <strong>INFUSIO</strong>
+    </a>
+
+    <!-- Nav -->
+    <nav class="nav" aria-label="Primary">
+      {nav.map(({ href, label }) => (
+        <a href={href} data-spy={href.slice(1)}>{label}</a>
+      ))}
+    </nav>
+
+    <!-- CTAs -->
+    <div class="cta-row">
+      <button class="btn btn-ghost small theme-toggle" id="themeToggle" type="button" aria-pressed="false" aria-label="Toggle color theme">
+        <span class="iconify" data-icon="ph:moon-stars-duotone" aria-hidden="true"></span>
+      </button>
+      <a href="#book" class="btn btn-primary small">Get Started</a>
+      <a href="/dashboard" class="btn btn-ghost small">Dashboard</a>
+    </div>
+  </div>
+</header>
+
+<style>
+  /* Override global sticky: make it truly fixed so it never “drops” */
+  .site-head.fixed{
+    position: fixed;
+    top: 14px;
+    left: 0;
+    right: 0;
+    z-index: 50;              /* above background + sections */
+    display: flex;
+    justify-content: center;
+    pointer-events: none;     /* keep inner pill clickable only */
+  }
+  .site-head.fixed .head-pill{ pointer-events: auto }
+
+  /* Theme toggle size matches your small buttons */
+  .theme-toggle .iconify{ font-size: 18px }
+</style>
+
+<script>
+  // ----- Theme toggle (respects system on first load) -----
+  const btn = document.getElementById('themeToggle');
+  const root = document.documentElement;
+
+  const preferDark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  const saved = localStorage.getItem('theme'); // 'light' | 'dark' | null
+  const initial = saved || (preferDark() ? 'dark' : 'light');
+  applyTheme(initial, false);
+
+  btn.addEventListener('click', () => {
+    const next = (root.dataset.theme === 'dark') ? 'light' : 'dark';
+    applyTheme(next, true);
+  });
+
+  function applyTheme(mode, persist){
+    root.dataset.theme = mode;                 // allows [data-theme="light"] overrides later
+    btn.setAttribute('aria-pressed', mode === 'dark');
+    // Swap icon
+    btn.querySelector('.iconify')?.setAttribute(
+      'data-icon',
+      mode === 'dark' ? 'ph:sun-duotone' : 'ph:moon-stars-duotone'
+    );
+    if (persist) localStorage.setItem('theme', mode);
+  }
+
+  // ----- Simple scroll spy for hash sections -----
+  const links = Array.from(document.querySelectorAll('nav a[data-spy]'));
+  const sections = links
+    .map(a => document.getElementById(a.dataset.spy))
+    .filter(Boolean);
+
+  if ('IntersectionObserver' in window && sections.length){
+    const obs = new IntersectionObserver((entries) => {
+      // choose the most visible section
+      const inView = entries
+        .filter(e => e.isIntersecting)
+        .sort((a,b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!inView) return;
+      const id = inView.target.id;
+      links.forEach(a => a.classList.toggle('active', a.dataset.spy === id));
+    }, { rootMargin: '-40% 0px -50% 0px', threshold: [0, .25, .5, .75, 1] });
+    sections.forEach(s => obs.observe(s));
+  }
+</script>
