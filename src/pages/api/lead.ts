@@ -2,7 +2,7 @@
 import type { APIRoute } from 'astro';
 import { supabaseService } from '../../lib/supabase';
 import { isEmail } from '../../lib/verify';
-import { sendLeadEmail } from '../../lib/mailer';
+import { sendEmail } from '../../lib/email';
 
 // ---------------- Telegram notify ----------------
 async function notifyTelegram(text: string) {
@@ -30,46 +30,41 @@ function isDisposable(email: string) {
   const domain = email.toLowerCase().split('@')[1] || '';
   if (!domain) return true;
   if (DISPOSABLE_DOMAINS.has(domain)) return true;
-  // allow simple subdomain match e.g., foo.mailinator.com
   return Array.from(DISPOSABLE_DOMAINS).some(d => domain.endsWith(`.${d}`));
 }
 
-// Optional: remote verifier via apivault/dev proxy (if configured)
+// -------- Optional remote verifier (fail-open) ----
 async function verifyEmailRemote(email: string) {
-  const url = import.meta.env.EMAIL_VERIFY_URL;     // e.g. your apivault.dev proxy
-  const key = import.meta.env.EMAIL_VERIFY_KEY;     // bearer or api-key header
-  if (!url || !key) return { ok: true };            // skip if not configured
+  const url = import.meta.env.EMAIL_VERIFY_URL;
+  const key = import.meta.env.EMAIL_VERIFY_KEY;
+  if (!url || !key) return { ok: true };
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body: JSON.stringify({ email })
     });
-    if (!res.ok) return { ok: true }; // fail-open
+    if (!res.ok) return { ok: true };
     const data = await res.json();
-    // expect a shape like { deliverable: boolean } but tolerate variations
     const deliverable = Boolean(
       data?.deliverable ?? data?.result?.deliverable ?? data?.data?.deliverable ?? true
     );
     return { ok: deliverable };
   } catch {
-    return { ok: true }; // fail-open
+    return { ok: true };
   }
 }
 
 // ------------------ Body parsing ------------------
 async function parseBody(req: Request) {
   const ct = req.headers.get('content-type') || '';
-  if (ct.includes('application/json')) {
-    return await req.json();
-  }
+  if (ct.includes('application/json')) return await req.json();
   if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
     const fd = await req.formData();
     const obj: Record<string, any> = {};
     fd.forEach((v, k) => { obj[k] = typeof v === 'string' ? v : (v as File).name; });
     return obj;
   }
-  // Last resort
   try { return await req.json(); } catch { return {}; }
 }
 
@@ -78,7 +73,7 @@ export const POST: APIRoute = async ({ request }) => {
   try {
     const body = await parseBody(request);
 
-    // Honeypot: if bots fill hidden field "hp", do nothing
+    // Honeypot
     if ((body.hp ?? '').toString().trim() !== '') {
       return new Response(null, { status: 204 });
     }
@@ -97,18 +92,13 @@ export const POST: APIRoute = async ({ request }) => {
     const tz       = (body.tz ?? '').toString();
     const ua       = (body.ua ?? '').toString();
 
-    if (!name || !isEmail(email)) {
-      return new Response('Invalid', { status: 400 });
-    }
-    if (isDisposable(email)) {
-      return new Response('Disposable email not allowed', { status: 400 });
-    }
-    const { ok: deliverable } = await verifyEmailRemote(email);
-    if (!deliverable) {
-      return new Response('Undeliverable email', { status: 400 });
-    }
+    if (!name || !isEmail(email)) return new Response('Invalid', { status: 400 });
+    if (isDisposable(email))      return new Response('Disposable email not allowed', { status: 400 });
 
-    // Insert: keep your original columns, tuck extras into meta JSON
+    const { ok: deliverable } = await verifyEmailRemote(email);
+    if (!deliverable) return new Response('Undeliverable email', { status: 400 });
+
+    // Insert (adjust column names to your schema)
     const meta = { company, website, industry, tz, ua, mode, source: body.source ?? 'infusio-site' };
 
     const { data, error } = await supabaseService
@@ -126,11 +116,13 @@ export const POST: APIRoute = async ({ request }) => {
 
     if (error) throw error;
 
-    // Notify
-    await sendLeadEmail({ name, email, message });
-    await notifyTelegram(
-      `🆕 *Lead*\n• Name: *${name}*\n• Email: ${email}\n• Phone: ${phone || '—'}\n• Channel: ${channel}\n• Msg: ${message || '—'}\n• Company: ${company || '—'}`
-    );
+    // Notify (don’t fail request if email/telegram throw)
+    try { await sendEmail({ name, email, message }); } catch {}
+    try {
+      await notifyTelegram(
+        `🆕 *Lead*\n• Name: *${name}*\n• Email: ${email}\n• Phone: ${phone || '—'}\n• Channel: ${channel}\n• Msg: ${message || '—'}\n• Company: ${company || '—'}`
+      );
+    } catch {}
 
     return new Response(JSON.stringify({ ok: true, id: data.id }), { status: 200 });
   } catch (e: any) {
