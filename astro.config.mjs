@@ -1,7 +1,9 @@
+// astro.config.mjs
 import { defineConfig } from 'astro/config';
-import vercel from '@astrojs/vercel/serverless'; // or /edge if you prefer
+import vercel from '@astrojs/vercel'; // ✅ new import
 
 export default defineConfig({
-  output: 'hybrid',          // enables API routes
-  adapter: vercel(),
+  output: 'server',            // ✅ was "hybrid" (invalid)
+  adapter: vercel(),           // default is Node runtime on Vercel
+  // If you want Edge runtime instead, use: vercel({ runtime: 'edge' })
 });
