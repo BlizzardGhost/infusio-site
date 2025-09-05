@@ -1,20 +1,31 @@
 // src/lib/verify.ts
-export async function verifyEmailAddress(email: string) {
-  const base = import.meta.env.EMAIL_VERIFY_URL!;
-  const key  = import.meta.env.EMAIL_VERIFY_KEY!;
+export type LeadInput = {
+  name: string;
+  email: string;
+  message: string;
+  phone?: string;
+  source?: string;
+};
 
-  const res = await fetch(`${base}?email=${encodeURIComponent(email)}`, {
-    headers: { Authorization: `Bearer ${key}` }
-  });
+const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText);
-    throw new Error(`Verify API error: ${res.status} ${msg}`);
-  }
-  // normalize to a minimal shape { deliverable: boolean, reason?: string }
-  const data = await res.json();
-  return {
-    deliverable: !!(data.deliverable ?? data.is_valid ?? data.result === 'valid'),
-    raw: data
-  };
+export function validateLead(payload: any): {
+  ok: boolean;
+  data?: LeadInput;
+  errors?: string[];
+} {
+  const errors: string[] = [];
+  const name = String(payload?.name ?? '').trim();
+  const email = String(payload?.email ?? '').trim();
+  const message = String(payload?.message ?? '').trim();
+  const phone = payload?.phone ? String(payload.phone).trim() : undefined;
+  const source = payload?.source ? String(payload.source).trim() : undefined;
+
+  if (name.length < 2 || name.length > 80) errors.push('Name must be 2–80 chars.');
+  if (!emailRx.test(email)) errors.push('Valid email required.');
+  if (message.length < 2 || message.length > 2000) errors.push('Message must be 2–2000 chars.');
+  if (phone && phone.length > 30) errors.push('Phone too long.');
+
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, data: { name, email, message, phone, source } };
 }

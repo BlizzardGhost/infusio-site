@@ -1,7 +1,7 @@
 // /src/pages/api/lead.ts
 import type { APIRoute } from 'astro';
 import { supabaseService } from '../../lib/supabase';
-import { isEmail } from '../../lib/validators';
+import { isEmail } from '../../lib/verify';
 import { sendLeadEmail } from '../../lib/mailer';
 
 // ---------------- Telegram notify ----------------
