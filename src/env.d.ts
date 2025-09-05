@@ -4,6 +4,7 @@ interface ImportMetaEnv {
   readonly PUBLIC_SUPABASE_URL: string;
   readonly PUBLIC_SUPABASE_ANON_KEY: string;
   readonly SUPABASE_SERVICE_ROLE?: string;
+  readonly SUPABASE_SERVICE_KEY?: string;
 
   readonly TELEGRAM_BOT_TOKEN?: string;
   readonly TELEGRAM_CHAT_ID?: string;
