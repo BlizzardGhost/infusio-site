@@ -14,7 +14,7 @@ const stack: Item[] = [
   { name: "Adobe",       icon: "simple-icons:adobe", href: "https://www.adobe.com/express/" },
   { name: "Figma",       icon: "simple-icons:figma", href: "https://figma.com" },
   { name: "Replit",      icon: "simple-icons:replit", href: "https://replit.com" },
-  { name: "Lovable",     icon: "mdi:heart", href: "https://lovable.dev" }, // neutral icon
+  { name: "Lovable",     icon: "mdi:heart", href: "https://lovable.dev" },
 
   // Data / CRM / Analytics
   { name: "HubSpot",     icon: "simple-icons:hubspot", href: "https://hubspot.com" },
@@ -37,14 +37,14 @@ const stack: Item[] = [
   { name: "Mistral",     icon: "simple-icons:mistralai", href: "https://mistral.ai" },
   { name: "Gemini",      icon: "simple-icons:googlegemini", href: "https://gemini.google.com/app" },
   { name: "ElevenLabs",  icon: "simple-icons:elevenlabs", href: "https://elevenlabs.io" },
-  { name: "Sora",        icon: "mdi:play-circle-outline" },  // illustrative
-  { name: "Genspark",    icon: "mdi:sparkles" }             // illustrative
+  { name: "Sora",        icon: "mdi:play-circle-outline" },
+  { name: "Genspark",    icon: "mdi:sparkles" }
 ];
 ---
 
 <section id="tech" class="section wrap" aria-labelledby="tech-title">
-  <h2 id="tech-title" style="margin:0 0 24px;">Our Tech Cloud</h2>
-  <p class="hero-sub" style="max-width:60ch;margin:0 0 24px;">
+  <h2 id="tech-title" class="tech-title">Our Tech Cloud</h2>
+  <p class="hero-sub tech-lead">
     Future-proof by design — the platforms we infuse into every brew.
   </p>
 
@@ -64,45 +64,3 @@ const stack: Item[] = [
     ))}
   </div>
 </section>
-
-<style>
-  .tech-cloud{
-    display:grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 18px 16px;
-    align-items:stretch;
-  }
-  .logo-tile{
-    position:relative;
-    display:flex; flex-direction:column;
-    align-items:center; justify-content:center;
-    gap:10px;
-    padding:18px 14px;
-    border-radius:14px;
-    background: rgba(255,255,255,.03);
-    border: 1px solid rgba(255,255,255,.09);
-    box-shadow: 0 10px 30px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.06);
-    text-align:center;
-    color:#aef1df;
-    transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
-    outline: none;
-  }
-  .logo-tile:hover,
-  .logo-tile:focus-visible{
-    transform: translateY(-2px);
-    border-color: rgba(45,212,191,.35);
-    background: linear-gradient(180deg, rgba(45,212,191,.08), rgba(255,255,255,.03));
-    box-shadow: 0 14px 36px rgba(0,0,0,.38), 0 0 64px rgba(45,212,191,.10) inset;
-  }
-  .logo-tile .iconify{
-    font-size:56px; line-height:1;
-    color:#2dd4bf;
-    filter: drop-shadow(0 4px 18px rgba(45,212,191,.25));
-    opacity:.95;
-  }
-  .logo-tile .label{
-    font-size:.9rem; letter-spacing:.01em; color: rgba(173,245,226,.9); user-select:none;
-  }
-  @media (max-width:680px){ .logo-tile .iconify{ font-size:44px } }
-  @media (prefers-reduced-motion: reduce){ .logo-tile{ transition:none } }
-</style>

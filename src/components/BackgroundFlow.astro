@@ -1,5 +1,7 @@
 ---
-/** Fixed background container. Fog + custom tendrils canvas (no polygon net). */
+// BackgroundFlow.astro
+// Fixed, theme-aware background container.
+// NOTE: We keep the same markup so your TS init works unchanged.
 ---
 <div class="flow-bg" aria-hidden="true">
   <canvas id="tendrils" class="flow-layer"></canvas>
@@ -10,20 +12,72 @@
 <script type="module">
   import initBackgroundFlow from '/src/scripts/background-flow.ts';
   initBackgroundFlow();
+
+  // Optional: re-tint fog when theme toggles (if your toggle updates data-theme)
+  const html = document.documentElement;
+  const obs = new MutationObserver(() => {
+    // your TS can read CSS vars; forcing a small style read nudges Vanta to re-evaluate sizes
+    document.getElementById('vanta-fog')?.style.setProperty('--_nudge', Date.now());
+  });
+  obs.observe(html, { attributes: true, attributeFilter: ['data-theme'] });
 </script>
 
 <style>
+  /* ---------- Theme variables for the background ---------- */
+  :root{
+    /* dark defaults */
+    --flow-bg-1:#0e1113;
+    --flow-bg-2:#0b0f11;
+    --flow-vignette: rgba(0,0,0,.32);
+    --flow-fog-opacity: .55;     /* how visible the Vanta fog is */
+    --flow-canvas-opacity: .45;  /* tendrils canvas */
+    --flow-blend: normal;        /* blend mode for fog */
+  }
+  :root[data-theme="light"],
+  html[data-theme="light"],
+  body[data-theme="light"]{
+    /* light re-map */
+    --flow-bg-1:#f7fbff;
+    --flow-bg-2:#eef4fb;
+    --flow-vignette: rgba(0,0,0,.10);     /* much softer vignette */
+    --flow-fog-opacity: .22;              /* very subtle fog */
+    --flow-canvas-opacity: .18;           /* very subtle tendrils */
+    --flow-blend: multiply;               /* let fog shade gently on light */
+  }
+
+  /* ---------- Container ---------- */
   .flow-bg{
     position:fixed; inset:0; z-index:-10; pointer-events:none;
     overflow:clip; isolation:isolate;
-    background: linear-gradient(#0e1113, #0b0f11);
+
+    /* remove hardcoded darks; use theme variables */
+    background: linear-gradient(var(--flow-bg-1), var(--flow-bg-2));
   }
+
   .flow-layer{
-    position:absolute; inset:0; 
+    position:absolute; inset:0;
     width:100%; height:100%; display:block;
   }
+
+  /* Vignette adapts to theme via --flow-vignette */
   .flow-bg::after{
     content:""; position:absolute; inset:0;
-    background: radial-gradient(1200px 700px at 50% 50%, transparent 70%, rgba(0,0,0,.32) 100%);
+    background: radial-gradient(1200px 700px at 50% 50%,
+                 transparent 70%, var(--flow-vignette) 100%);
+  }
+
+  /* Make the fog + canvas visually match the theme without touching your TS */
+  #vanta-fog{
+    opacity: var(--flow-fog-opacity);
+    mix-blend-mode: var(--flow-blend);
+  }
+  #tendrils{
+    opacity: var(--flow-canvas-opacity);
+    mix-blend-mode: var(--flow-blend);
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion:reduce){
+    #vanta-fog, #tendrils { opacity: 0 !important; }
   }
 </style>

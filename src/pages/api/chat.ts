@@ -1,17 +1,15 @@
-// src/pages/api/chat.ts
+// /src/pages/api/chat.ts
 import type { APIRoute } from 'astro';
 import { streamOpenRouterResponse } from '../../lib/openrouter';
 
-const defaultModel =
-  import.meta.env.OPENROUTER_MODEL || 'meta-llama/llama-3.1-8b-instruct:free';
-
 export const prerender = false;
 
+// Accepts: { message?: string, messages?: {role:'system'|'user'|'assistant', content:string}[], model?: string }
 export const POST: APIRoute = async ({ request }) => {
-  const { message } = await request.json();
-  if (!message) {
-    return new Response('Message required', { status: 400 });
+  const body = await request.json().catch(() => ({}));
+  const { message, messages, model } = body || {};
+  if (!message && !Array.isArray(messages)) {
+    return new Response('Message(s) required', { status: 400 });
   }
-
-  return streamOpenRouterResponse(message, defaultModel);
+  return streamOpenRouterResponse(message ?? null, model ?? null, messages ?? null);
 };

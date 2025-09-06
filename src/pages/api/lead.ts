@@ -30,6 +30,7 @@ function isDisposable(email: string) {
   const domain = email.toLowerCase().split('@')[1] || '';
   if (!domain) return true;
   if (DISPOSABLE_DOMAINS.has(domain)) return true;
+  // allow simple subdomain match e.g., foo.mailinator.com
   return Array.from(DISPOSABLE_DOMAINS).some(d => domain.endsWith(`.${d}`));
 }
 
@@ -44,14 +45,14 @@ async function verifyEmailRemote(email: string) {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body: JSON.stringify({ email })
     });
-    if (!res.ok) return { ok: true };
+    if (!res.ok) return { ok: true }; // fail-open
     const data = await res.json();
     const deliverable = Boolean(
       data?.deliverable ?? data?.result?.deliverable ?? data?.data?.deliverable ?? true
     );
     return { ok: deliverable };
   } catch {
-    return { ok: true };
+    return { ok: true }; // fail-open
   }
 }
 
@@ -92,11 +93,21 @@ export const POST: APIRoute = async ({ request }) => {
     const tz       = (body.tz ?? '').toString();
     const ua       = (body.ua ?? '').toString();
 
-    if (!name || !isEmail(email)) return new Response('Invalid', { status: 400 });
-    if (isDisposable(email))      return new Response('Disposable email not allowed', { status: 400 });
-
+    // ---- Validation (email-only required) ----
+    if (!isEmail(email)) {
+      return new Response('Invalid email', { status: 400 });
+    }
+    if (isDisposable(email)) {
+      return new Response('Disposable email not allowed', { status: 400 });
+    }
     const { ok: deliverable } = await verifyEmailRemote(email);
-    if (!deliverable) return new Response('Undeliverable email', { status: 400 });
+    if (!deliverable) {
+      return new Response('Undeliverable email', { status: 400 });
+    }
+
+    // Prepare safe values
+    const safeName = name || '—';
+    const safeMessage = message || 'Website request via AI receptionist';
 
     // Insert (adjust column names to your schema)
     const meta = { company, website, industry, tz, ua, mode, source: body.source ?? 'infusio-site' };
@@ -104,8 +115,10 @@ export const POST: APIRoute = async ({ request }) => {
     const { data, error } = await supabaseService
       .from('leads')
       .insert({
-        name, email, phone,
-        message,
+        name: safeName,
+        email,
+        phone,
+        message: safeMessage,
         channel,
         utm,
         status: 'new',
@@ -117,15 +130,21 @@ export const POST: APIRoute = async ({ request }) => {
     if (error) throw error;
 
     // Notify (don’t fail request if email/telegram throw)
-    try { await sendEmail({ name, email, message }); } catch {}
+    try { await sendEmail({ name: safeName, email, message: safeMessage }); } catch {}
     try {
       await notifyTelegram(
-        `🆕 *Lead*\n• Name: *${name}*\n• Email: ${email}\n• Phone: ${phone || '—'}\n• Channel: ${channel}\n• Msg: ${message || '—'}\n• Company: ${company || '—'}`
+        ` *Lead*\n• Name: *${safeName}*\n• Email: ${email}\n• Phone: ${phone || '—'}\n• Channel: ${channel}\n• Msg: ${safeMessage}\n• Company: ${company || '—'}`
       );
     } catch {}
 
-    return new Response(JSON.stringify({ ok: true, id: data.id }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, id: data.id }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
   } catch (e: any) {
-    return new Response(e?.message ?? 'Server error', { status: 500 });
+    return new Response(
+      JSON.stringify({ ok: false, error: e?.message ?? 'Server error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
   }
 };
