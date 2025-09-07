@@ -761,3 +761,10 @@ h1,h2,h3,h4,h5,h6{
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-2), transparent 70%),
               0 18px 42px rgba(0,0,0,.38);
 }
+
+/* Utility: hide element on small screens */
+@media (max-width: 680px){
+  .hide-mobile {
+    display: none !important;
+  }
+}
