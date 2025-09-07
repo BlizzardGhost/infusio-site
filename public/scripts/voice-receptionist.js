@@ -28,6 +28,56 @@
   // Conversation state shared with backend
   const convo = [{ role: 'system', content: SYSTEM }, ...FEWSHOT];
 
+  // ---------------- Lead-capture state (EN/ES heuristics) ----------------
+  const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+  const phoneRe = /\+?\d[\d\s().-]{6,}/;
+  const nameRe  = /\b(?:i am|i’m|im|soy|me llamo)\s+([A-ZÁÉÍÓÚÑ][\p{L}\-']{1,})/iu;
+
+  const lead = { name:'', email:'', phone:'', consent:false, sent:false };
+  const turns = []; // {who:'user'|'ai', text:string}
+
+  function maybeCapture(text){
+    if (!text) return;
+    if (!lead.email){ const m = text.match(emailRe); if (m) lead.email = m[0].trim(); }
+    if (!lead.phone){ const m = text.match(phoneRe); if (m) lead.phone = m[0].trim(); }
+    if (!lead.name){  const m = text.match(nameRe);  if (m) lead.name  = m[1].trim(); }
+    const t = text.toLowerCase();
+    if (!lead.consent && /\b(yes|yep|sure|ok|okay|agree|consent|sí|claro|de acuerdo)\b/.test(t)) lead.consent = true;
+  }
+
+  async function trySendLead(){
+    if (lead.sent) return;
+
+    const lastUser = [...turns].reverse().find(t => t.who === 'user')?.text || '';
+    const intent = detectIntent(lastUser);
+    const hasContact = !!(lead.email || lead.phone);
+    if (!hasContact) return;
+    if (intent === 'generic') return;
+    const consentish = lead.consent || intent === 'book' || /book|agendar|reserva/i.test(lastUser);
+    if (!consentish) return;
+
+    const transcript = turns.map(t => (t.who === 'user' ? 'User: ' : 'AI: ') + t.text).join('\n');
+    const utm = Object.fromEntries(new URLSearchParams(location.search));
+    const payload = {
+      source:'infusio-site',
+      channel:'voice',
+      mode:'lead',
+      name: lead.name, email: lead.email, phone: lead.phone,
+      message: transcript,
+      utm,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ua: navigator.userAgent
+    };
+
+    try{
+      await fetch('/api/lead', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      lead.sent = true; // server triggers Supabase + Telegram
+    }catch(e){
+      // non-fatal; we’ll retry later if another message arrives
+      console.error('Lead send failed', e);
+    }
+  }
+
   // ---------------- Runtime flags ----------------
   let conversationActive = false;  // single tap starts/stops the whole session
   let listening = false;
@@ -36,45 +86,100 @@
   let lastUser  = '';
   let restartTimer = null;
 
+  // Sidetone guard (prevents hearing itself on phones)
+  let echoGuardUntil = 0; // ms timestamp until which we ignore STT results
+
   // Default language guess
   let currentRecLang = (navigator.language || 'en-US').toLowerCase().startsWith('es') ? 'es-ES' : 'en-US';
 
   // ---------------- UI helpers ----------------
   const setStatus = (t) => { status.textContent = t; };
 
-  function pickVoice(lang) {
-    const voices = synth?.getVoices?.() || [];
-    const byLang = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(lang.toLowerCase()));
+  // ----- Voice loading utility (Chrome/Safari + Edge Natural) -----
+  let voicesCache = [];
+  function loadVoices() {
+    return new Promise((resolve) => {
+      const ready = () => {
+        voicesCache = (synth?.getVoices?.() || []).slice();
+        resolve(voicesCache);
+      };
+      const existing = synth?.getVoices?.() || [];
+      if (existing.length) { voicesCache = existing.slice(); return resolve(voicesCache); }
+      if ('onvoiceschanged' in synth) synth.onvoiceschanged = () => { ready(); };
+      else setTimeout(ready, 150);
+    });
+  }
+  const IS_EDGE = /\bEdg\//.test(navigator.userAgent);
+
+  const PREF = {
+    en_edge: [
+      /^Microsoft (Aria|Jenny|Ava|Emma|Michelle|Christopher) Online \(Natural\).*English \(United States\)/i,
+      /^Microsoft (Libby|Sonia|Ryan|Thomas) Online \(Natural\).*English \(United Kingdom\)/i
+    ],
+    es_edge: [
+      /^Microsoft (Dalia|Jorge|Alvaro|Paloma|Elvira|Alonso|Ximena|Camila|Maria|Luis|Carlos|Lorena|Andrea|Margarita|Teresa) Online \(Natural\).*Spanish/i
+    ],
+    en_web: [
+      /^Google US English$/i, /^Google UK English Female$/i, /^Samantha$/i,
+      /^Daniel\b.*United Kingdom/i, /^Arthur$/i, /^Martha$/i, /^Moira$/i
+    ],
+    es_web: [
+      /^Paulina$/i, /^M[oó]nica$/i, /^Google español$/i, /^Google español de Estados Unidos$/i
+    ]
+  };
+
+  function pickVoiceFor(langTag){
+    const voices = voicesCache.length ? voicesCache : (synth?.getVoices?.() || []);
+    const isES   = langTag.toLowerCase().startsWith('es');
+    const poolFirst = IS_EDGE
+      ? (isES ? PREF.es_edge : PREF.en_edge)
+      : (isES ? PREF.es_web  : PREF.en_web);
+
+    for (const rx of poolFirst){ const v = voices.find(v => rx.test(v.name)); if (v) return v; }
+    const byLang = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(langTag.toLowerCase()));
     if (byLang) return byLang;
-    if (lang.startsWith('es'))
-      return voices.find(v => /Mónica|Monica|Lucía|Lucia|Paulina|Google español/i.test(v.name)) || byLang;
-    return voices.find(v => /Samantha|Victoria|Daniel|Ava|Google UK English Female/i.test(v.name)) || byLang;
+    const googleUS = voices.find(v => v.name === 'Google US English');
+    return googleUS || voices[0] || null;
+  }
+
+  async function ensureVoiceListReady(){
+    if (!voicesCache.length) await loadVoices();
   }
 
   function speak(text, langGuess = 'en-US') {
     if (!text) return;
-    try {
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = langGuess;
-      u.rate = 1.0; u.pitch = 1.0; u.volume = 1;
-      const v = pickVoice(langGuess);
-      if (v) u.voice = v;
+    (async () => {
+      try {
+        await ensureVoiceListReady();
 
-      u.onstart = () => { speaking = true; orb.classList.add('speaking'); };
-      u.onend   = () => {
-        speaking = false;
-        orb.classList.remove('speaking');
-        if (conversationActive) {
-          queueRestartListening(350);
-          setStatus(langGuess.startsWith('es') ? 'Escuchando…' : 'Listening…');
-        } else {
-          setStatus('Tap the orb to speak.');
-        }
-      };
+        // Stop recognizer while speaking (prevents mid-sentence pickup)
+        try { if (rec && listening) rec.stop(); } catch {}
 
-      synth.cancel();
-      synth.speak(u);
-    } catch {}
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = langGuess;
+        u.rate = 1.0; u.pitch = 1.0; u.volume = 1;
+
+        const v = pickVoiceFor(langGuess);
+        if (v) u.voice = v;
+
+        u.onstart = () => { speaking = true; orb.classList.add('speaking'); };
+        u.onend   = () => {
+          speaking = false;
+          orb.classList.remove('speaking');
+          // ignore room echo just after TTS ends (mobile)
+          echoGuardUntil = Date.now() + 900;
+          if (conversationActive) {
+            queueRestartListening(750);
+            setStatus(langGuess.startsWith('es') ? 'Escuchando…' : 'Listening…');
+          } else {
+            setStatus('Tap the orb to speak.');
+          }
+        };
+
+        synth.cancel();
+        synth.speak(u);
+      } catch {}
+    })();
   }
 
   // ---------------- Language & content helpers ----------------
@@ -111,7 +216,6 @@
         ? 'No ofrecemos servicios médicos ni de spa. Nos enfocamos en sitios Astro/Vercel y automatizaciones útiles. ¿Quieres agendar una llamada corta?'
         : 'We don’t provide medical or spa services. We focus on Astro/Vercel sites and helpful automations. Want me to book a quick call?';
     }
-    // If model drifted there, gently reframe
     return lang.startsWith('es')
       ? reply.replace(MEDICAL_WORDS, 'nuestros sitios web y automatizaciones').replace(/\s+/g, ' ').trim()
       : reply.replace(MEDICAL_WORDS, 'our websites and automations').replace(/\s+/g, ' ').trim();
@@ -121,7 +225,7 @@
     s = (s || '').toLowerCase();
     if (/\b(web|website|site|sitio|p[aá]gina)\b/.test(s)) return 'website';
     if (/\b(automation|automations|automatizaciones|zapier|make|n8n)\b/.test(s)) return 'automation';
-    if (/\b(book|call|meet|agenda|agendar|cita)\b/.test(s)) return 'book';
+    if (/\b(book|call|meet|agenda|agendar|cita|schedule)\b/.test(s)) return 'book';
     if (/\b(bug|issue|error|reporte?|reportar)\b/.test(s)) return 'bug';
     if (/\b(whatsapp)\b/.test(s)) return 'whatsapp';
     return 'generic';
@@ -165,6 +269,19 @@
           return 'I can help with your website and automations. What do you want to achieve first? I can also book a short call.';
       }
     }
+  }
+
+  // If intent is booking but we lack contact, append a gentle ask
+  function maybeAppendContactAsk(reply, user, lang){
+    const needContact = !(lead.email || lead.phone);
+    if (!needContact) return reply;
+    const intent = detectIntent(user);
+    if (intent !== 'book') return reply;
+
+    const ask = lang.startsWith('es')
+      ? ' ¿Cuál es tu mejor correo para confirmarte?'
+      : ' What’s the best email to confirm?';
+    return /[.!?…]$/.test(reply.trim()) ? (reply + ' ' + ask) : (reply + '. ' + ask);
   }
 
   // ---------------- Backend call ----------------
@@ -272,7 +389,6 @@
     r.onend = () => {
       listening = false;
       orb.classList.remove('listening');
-      // Auto-rearm if the session is active and we’re not speaking
       if (conversationActive && !speaking) queueRestartListening(250);
       else if (!conversationActive) setStatus('Tap the orb to speak.');
     };
@@ -282,7 +398,6 @@
       listening = false;
       orb.classList.remove('listening');
       if (!conversationActive) return;
-      // Soft-retry on transient errors to keep the loop fluid
       const code = e?.error || 'unknown';
       if (code === 'no-speech' || code === 'aborted' || code === 'network') {
         queueRestartListening(350);
@@ -293,6 +408,9 @@
     };
 
     r.onresult = async (ev) => {
+      // Ignore anything captured within the sidetone guard window
+      if (Date.now() < echoGuardUntil) { queueRestartListening(400); return; }
+
       const utter = ev.results?.[0]?.[0]?.transcript?.trim();
       if (!utter) {
         if (conversationActive) queueRestartListening(300);
@@ -303,6 +421,8 @@
       lastUser = utter;
       currentRecLang = looksSpanish(utter) ? 'es-ES' : 'en-US';
       convo.push({ role: 'user', content: utter });
+      turns.push({ who:'user', text: utter });
+      maybeCapture(utter);
 
       try {
         setStatus(currentRecLang.startsWith('es') ? 'Pensando…' : 'Thinking…');
@@ -315,15 +435,19 @@
         let fixed = correctScope(raw, lastUser, currentRecLang);
         fixed = deJargon(fixed);
         fixed = upgradeIfGeneric(fixed, lastUser, currentRecLang);
+        fixed = maybeAppendContactAsk(fixed, lastUser, currentRecLang);
 
         convo.push({ role: 'assistant', content: fixed });
+        turns.push({ who:'ai', text: fixed });
+
+        // try to send lead in the background
+        trySendLead();
 
         setStatus(currentRecLang.startsWith('es') ? 'Hablando…' : 'Speaking…');
         speak(fixed, currentRecLang);
 
       } catch {
         setStatus(currentRecLang.startsWith('es') ? 'Error de IA. Reintentando…' : 'AI error. Retrying…');
-        // keep the loop alive even on failure
         if (conversationActive) queueRestartListening(600);
       }
     };
@@ -338,8 +462,9 @@
       synth.cancel();
       speaking = false;
       orb.classList.remove('speaking');
+      echoGuardUntil = Date.now() + 600; // short guard after manual interruption
       if (conversationActive) {
-        queueRestartListening(150);
+        queueRestartListening(250);
         setStatus(currentRecLang.startsWith('es') ? 'Escuchando…' : 'Listening…');
       } else {
         setStatus('Tap the orb to speak.');
