@@ -1,6 +1,9 @@
 ---
 /**
- * ReceptionistPanel.astro — conversational receptionist
+ * ReceptionistPanel.astro — conversational receptionist (UI only)
+ * Personality, guardrails, quick answers, and variables come from:
+ *   src/config/receptionist.ts (default export)
+ *
  * Props:
  *  - actionUrl: AI chat endpoint (default /api/chat)
  *  - leadUrl:   lead capture endpoint (default /api/lead)
@@ -10,14 +13,29 @@ const {
   leadUrl   = "/api/lead"
 } = Astro.props;
 
+/* Optional chips (pure UI) */
 const chips = [
   { label: "Start 14-day trial", val: "I want my free trial" },
-  { label: "Report a bug",        val: "I want to report a bug" },
-  { label: "WhatsApp number?",    val: "What’s your WhatsApp number?" }
+  { label: "Report a bug",       val: "I want to report a bug" },
+  { label: "WhatsApp number?",   val: "What’s your WhatsApp number?" }
 ];
+
+/* Static, safe import of config (no secrets to client) */
+import cfgRaw from "../config/receptionist";
+const cfg: any = cfgRaw ?? {};
+const CLIENT_CFG = {
+  system: typeof cfg.systemPrompt === "string" ? cfg.systemPrompt : null,
+  answers: (cfg.answers && typeof cfg.answers === "object") ? cfg.answers : {},
+  vars: (cfg.vars && typeof cfg.vars === "object") ? cfg.vars : {}
+};
 ---
 
 <div class="recept" data-action={actionUrl} data-lead={leadUrl} aria-label="AI receptionist chat">
+  <!-- tiny public config blob for the browser (no secrets) -->
+  <script type="application/json" id="recept-config">
+    {JSON.stringify(CLIENT_CFG)}
+  </script>
+
   <!-- Conversation log (hidden until first message) -->
   <div class="log" role="log" aria-live="polite" aria-relevant="additions" hidden></div>
 
@@ -32,7 +50,7 @@ const chips = [
       placeholder="Type your request — I’ll collect the basics and get you scheduled."
     ></textarea>
 
-    <!-- Context chips (appear after first bot message) -->
+    <!-- Context chips (we unhide after first assistant reply) -->
     <div class="chips" id="chips" hidden aria-label="Quick actions">
       {chips.map(c => <button class="chip" type="button" data-pick={c.val}>{c.label}</button>)}
     </div>
@@ -55,31 +73,44 @@ const chips = [
   const log     = root?.querySelector('.log');
   const form    = root?.querySelector('#leadForm');
   const input   = root?.querySelector('#chatInput');
-  const chips   = root?.querySelector('#chips');
+  const chipsUI = root?.querySelector('#chips');
 
-  // conversation state
-  const history = [
-    {
-      role: 'system',
-      content:
-        "You are Infusio Receptionist. Be concise, warm, and bilingual (EN/ES). " +
-        "Scope: websites that feel fast, ethical AI assistants/automation, and a calm business cockpit. " +
-        "Do NOT discuss spas, massage, or any medical services. " +
-        "Never repeat the same welcome twice in a conversation. " +
-        "Ask for name and email only when relevant and after the user request, one short question at a time."
-    }
-  ];
+  // ----- Read config from the page -----
+  const CFG = (() => {
+    try { return JSON.parse(document.getElementById('recept-config')?.textContent || "{}"); }
+    catch { return {}; }
+  })();
+  const SYSTEM  = CFG.system || null;
+  const ANSWERS = CFG.answers || {};
+  const VARS    = CFG.vars || {};
+
+  // ----- Conversation state -----
+  const history = [];
+  if (SYSTEM) history.push({ role: 'system', content: SYSTEM });
+
   let haveHadAUserTurn = false;
 
-  const state = { name:'', email:'', phone:'', consent:false, leadSent:false };
+  const state = {
+    name:'', email:'', phone:'',
+    consent:false, consentAsked:false, consentPending:false, consentSynced:false,
+    leadSent:false,
+    _hintName:false // whether we've pushed the "name known" hint
+  };
 
-  // --- UI helpers (wire to your existing rmsg/rbubble guards) ---
+  // --- Hydrate from previous session ---
+  try {
+    const saved = JSON.parse(localStorage.getItem('recept.state') || '{}');
+    if (saved && typeof saved === 'object') Object.assign(state, saved);
+  } catch {}
+
+  // Persist helper
+  function persist(){ try { localStorage.setItem('recept.state', JSON.stringify(state)); } catch {} }
+
+  // ----- UI helpers -----
   function row(kind){ const r = document.createElement('div'); r.className = `rmsg ${kind}`; return r; }
   function bubble(text=''){ const b = document.createElement('div'); b.className = 'rbubble'; b.textContent = text; return b; }
   function user(text){ const r=row('user'); const b=bubble(text); r.appendChild(b); log.appendChild(r); log.scrollTop = log.scrollHeight; return b; }
   function bot(text){ const r=row('bot');  const b=bubble(text); r.appendChild(b); log.appendChild(r); log.scrollTop = log.scrollHeight; return b; }
-
-  // typing indicator bubble (uses .rbubble.typing per your guards)
   function typingBubble(){
     const r = row('bot');
     const b = bubble('');
@@ -89,43 +120,124 @@ const chips = [
     return b;
   }
 
-  // simple capture
+  // ----- Lightweight capture (USER ONLY) -----
   const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
   const phoneRe = /\+?\d[\d\s().-]{6,}/;
-  function maybeCapture(text){
-    if (!state.email){ const m = text.match(emailRe); if (m) state.email = m[0].trim(); }
-    if (!state.phone){ const m = text.match(phoneRe); if (m) state.phone = m[0].trim(); }
+
+  // “my name is / soy / me llamo / i am / this is …”
+  const namePhrases = /\b(?:my name is|i am|i’m|im|this is|soy|me llamo)\s+([a-záéíóúñ'-]{2,})(?:\s+([a-záéíóúñ'-]{2,}))?(?:\s+([a-záéíóúñ'-]{2,}))?/i;
+  const nameStop = new Set(['the','ok','okay','thanks','thank','hola','hello','si','sí','yes','no','please']);
+  function cleanWord(w){ return (w || '').replace(/[^a-záéíóúñ'-]/gi,'').toLowerCase(); }
+
+  function maybeCaptureFromUser(text){
+    let changed = false;
+
+    // email / phone from the user's message
+    if (!state.email){ const m = text.match(emailRe); if (m) { state.email = m[0].trim(); changed = true; } }
+    if (!state.phone){ const m = text.match(phoneRe); if (m) { state.phone = m[0].trim(); changed = true; } }
+
+    // name: phrase-based first…
     if (!state.name){
-      const n = text.match(/\b(?:i am|i’m|im|soy|me llamo)\s+([A-Z][a-zA-Z\-']{1,})/i);
-      if (n) state.name = n[1];
+      const nm = text.match(namePhrases);
+      if (nm){
+        const parts = [nm[1], nm[2], nm[3]].filter(Boolean).map(cleanWord);
+        const valid = parts.filter(p => p.length >= 2 && !nameStop.has(p));
+        if (valid.length){
+          state.name = valid.map(s => s[0].toUpperCase() + s.slice(1)).join(' ');
+          changed = true;
+        }
+      }
+      // …otherwise accept a single capitalized word (e.g., “Ana”)
+      if (!state.name){
+        const oneWord = text.trim().match(/^[A-ZÁÉÍÓÚÑ][a-záéíóúñ'-]{1,}$/);
+        if (oneWord && !nameStop.has(oneWord[0].toLowerCase())){
+          state.name = oneWord[0];
+          changed = true;
+        }
+      }
     }
-    const t = text.toLowerCase();
-    if (!state.consent && /\b(yes|yep|sure|okay|ok|agree|consent|sí|claro|de acuerdo)\b/.test(t)) state.consent = true;
+
+    // consent only if we asked for it
+    const t = (text || '').toLowerCase();
+    if (!state.consent && state.consentPending && /\b(yes|yep|sure|okay|ok|agree|consent|sí|si|claro|de acuerdo)\b/.test(t)){
+      state.consent = true;
+      state.consentPending = false;
+      changed = true;
+    }
+
+    if (changed) persist();
+
+    // if we just learned the name, push a tiny non-invasive hint so the model doesn't ask again
+    if (state.name && !state._hintName){
+      history.push({ role:'system', content:`The user's name is ${state.name}. Do not ask for their name again.` });
+      state._hintName = true;
+      persist();
+    }
   }
 
+  // Ask consent once (after we have an email/phone)
+  function maybeAskConsent(){
+    if (state.consent || state.consentAsked) return;
+    if (!(state.email || state.phone)) return;
+    bot("Quick check: may I store your details and send follow-ups about Infusio? (yes/no)");
+    state.consentAsked   = true;
+    state.consentPending = true;
+    persist();
+  }
+
+  // ----- Lead capture: SILENT upsert -----
   async function trySendLead(){
     if (state.leadSent) return;
-    if (!state.email || !state.consent) return;
+    if (!state.email && !state.phone) return;
 
     const transcript = [...log.querySelectorAll('.rbubble')].slice(-14).map(n=>n.textContent).join('\n');
     const utm = Object.fromEntries(new URLSearchParams(location.search));
 
     const payload = {
-      source:'infusio-site', channel:'receptionist', mode:'lead',
-      name: state.name, email: state.email, phone: state.phone,
+      source:'infusio-site',
+      channel:'receptionist',
+      mode:'lead',
+      name: state.name,
+      email: state.email,
+      phone: state.phone,
+      consent: !!state.consent,
       message: transcript,
-      utm, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, ua: navigator.userAgent
+      utm,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ua: navigator.userAgent
     };
 
     try{
-      await fetch(leadURL, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const r = await fetch(leadURL, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      if (!r.ok) throw new Error('lead endpoint returned ' + r.status);
       state.leadSent = true;
-      bot('Perfect — got your details. We’ll email you shortly with times.');
+      persist();
     }catch(e){
-      console.error(e); bot('I couldn’t save that just now. You can also email hello@infusio.pro.');
+      console.error('Lead save failed:', e);
     }
   }
 
+  // If consent arrives after first send, update silently (once)
+  let consentUpdateInFlight = false;
+  async function tryUpdateConsent(){
+    if (!state.consent || !state.email || state.consentSynced || consentUpdateInFlight) return;
+    consentUpdateInFlight = true;
+    try{
+      const r = await fetch(leadURL, { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ mode:'consent-update', email: state.email, consent:true })
+      });
+      if (r.ok){
+        state.consentSynced = true;
+        persist();
+      }
+    }catch(e){
+      console.error('Consent update failed:', e);
+    } finally {
+      consentUpdateInFlight = false;
+    }
+  }
+
+  // ----- Streaming (LLM-first; local answers only as fallback) -----
   function extractChunk(payload){
     try{
       const j = JSON.parse(payload);
@@ -134,14 +246,33 @@ const chips = [
     }catch{ return ''; }
   }
 
-  async function streamAI(promptForThisTurn){
-    const b = typingBubble();
+  // Local quick answers (used only if the network/LLM call fails)
+  const compiled = Object.entries(ANSWERS).map(([k, v]) => ({
+    key: k,
+    patterns: (v?.patterns || []).map(p => { try{ return new RegExp(p, 'i'); } catch { return null; } }).filter(Boolean),
+    responses: v?.responses || {}
+  }));
+  const looksSpanish = (s) => /[áéíóúñ¿¡]|\b(hola|número|correo|agendar|cita|whatsapp|tel[eé]fono)\b/i.test(s || '');
+  function fillVars(text){ return (text || '').replace(/\{([a-z0-9_]+)\}/gi, (_, k) => (VARS[k] ?? `{${k}}`)); }
+  function tryLocalAnswer(userText){
+    if (!compiled.length) return null;
+    for (const a of compiled){
+      if (a.patterns.some(rx => rx?.test(userText))){
+        const lang = looksSpanish(userText) ? 'es' : 'en';
+        const raw  = a.responses[lang] || a.responses.en || '';
+        return fillVars(raw);
+      }
+    }
+    return null;
+  }
 
+  async function streamAI(){
+    const b = typingBubble();
     try{
       const res = await fetch(chatURL, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ message: promptForThisTurn, history, messages: history })
+        body: JSON.stringify({ messages: history })
       });
 
       let full = '';
@@ -182,22 +313,25 @@ const chips = [
       if (reply) history.push({ role:'assistant', content: reply });
       return reply;
     }catch(err){
-      console.error(err);
-      b.classList.remove('typing');
-      b.textContent = 'Network error talking to the AI.';
-      return '';
+      console.error('AI stream error:', err);
+      const lastUser = [...history].reverse().find(m => m.role === 'user')?.content || '';
+      const local = tryLocalAnswer(lastUser);
+      const msg = local || 'Network error talking to the AI.';
+      b.classList.remove('typing'); b.textContent = msg;
+      if (local) history.push({ role:'assistant', content: msg });
+      return msg;
     }
   }
 
-  // chips type into the box (don’t auto-send)
-  chips.addEventListener('click', (e) => {
+  // Chips behave as type-ahead
+  chipsUI?.addEventListener('click', (e) => {
     const btn = e.target.closest('.chip');
     if (!btn) return;
     input.value = btn.dataset.pick;
     input.focus();
   });
 
-  // main submit
+  // Main submit
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const raw = input.value.trim();
@@ -205,22 +339,24 @@ const chips = [
 
     if (log.hidden) log.hidden = false;
 
-    // user turn
     user(raw);
     history.push({ role:'user', content: raw });
-    maybeCapture(raw);
+    maybeCaptureFromUser(raw);      // <-- capture ONLY user turns
     input.value = '';
 
-    const promptForThisTurn = haveHadAUserTurn
+    const _promptForThisTurn = haveHadAUserTurn
       ? `Follow-up (same conversation; please do not greet again): ${raw}`
       : raw;
-
     haveHadAUserTurn = true;
 
-    const reply = await streamAI(promptForThisTurn);
-    if (reply) maybeCapture(reply);
+    const reply = await streamAI();
+    // IMPORTANT: no maybeCapture(reply) — never parse assistant messages
 
+    if (reply && chipsUI && chipsUI.hidden) chipsUI.hidden = false;
+
+    maybeAskConsent();
     trySendLead();
+    tryUpdateConsent();
   });
 
   // Enter = send, Shift+Enter = newline

@@ -4,44 +4,51 @@ type Client = {
   img: string   // /public/clients/*
   href?: string
   tag: string   // industry/vertical
+  display?: boolean
 }
 
 const clients: Client[] = [
   {
-    title: "KidsLab",
+    title: "KidsLab LATAM",
     img: "/clients/kidslab-lat.png",
     href: "https://kidslab.lat",
-    tag: "Education"
+    tag: "Education",
+    display: true
   },
   {
-    title: "Hero Wall",
+    title: "AI Hero Wall",
     img: "/clients/hero-wall.png",
     href: "https://hero-wall-mvp.vercel.app/",
-    tag: "Personal Brand"
+    tag: "Portfolio",
+    display: true
   },
   {
     title: "Dream Foundation",
     img: "/clients/dream-foundation.png",
     href: "https://nydreamfoundation.org/",
-    tag: "NGO"
+    tag: "NGO",
+    display: false
   },
   {
     title: "Camp David",
     img: "/clients/camp-david.png",
     href: "https://camp-david-mvp.vercel.app/",
-    tag: "Hospitality"
+    tag: "Hospitality",
+    display: false
   },
   {
     title: "Esencia Branding",
     img: "/clients/esencia.png",
-    href: "https://esenciabranding.com",
-    tag: "Design"
+    href: "#",
+    tag: "Marketing",
+    display: true
   },
   {
     title: "KBG Commercial",
     img: "/clients/kbg.png",
     href: "https://kbgcommercial.com/",
-    tag: "Freight Shipping"
+    tag: "Freight Shipping",
+    display: false
   }
 ]
 ---
@@ -53,7 +60,7 @@ const clients: Client[] = [
   </p>
 
   <div class="grid-3">
-    {clients.map((c) => (
+    {clients.filter((c) => c.display).map((c) => (
       c.href ? (
         <a
           class="card client-card"

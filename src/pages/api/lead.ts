@@ -1,62 +1,9 @@
 // /src/pages/api/lead.ts
 import type { APIRoute } from 'astro';
-import { supabaseService } from '../../lib/supabase';
-import { isEmail } from '../../lib/verify';
-import { sendEmail } from '../../lib/email';
+import type { Lead } from '../../types/receptionist';
+import { runIntegrations } from '../../lib/integrations/router';
 
-// ---------------- Telegram notify ----------------
-async function notifyTelegram(text: string) {
-  const token = import.meta.env.TELEGRAM_BOT_TOKEN;
-  const chatId = import.meta.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
-  try {
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
-    });
-  } catch { /* noop */ }
-}
-
-// --------------- Disposable check ----------------
-const DISPOSABLE_DOMAINS = new Set([
-  'mailinator.com','tempmail.com','10minutemail.com','yopmail.com','guerrillamail.com',
-  'trashmail.com','getnada.com','dispostable.com','fakeinbox.com','sharklasers.com',
-  'throwawaymail.com','maildrop.cc','moakt.cc','mytemp.email','temp-mail.org'
-]);
-
-function isDisposable(email: string) {
-  const domain = email.toLowerCase().split('@')[1] || '';
-  if (!domain) return true;
-  if (DISPOSABLE_DOMAINS.has(domain)) return true;
-  // allow simple subdomain match e.g., foo.mailinator.com
-  return Array.from(DISPOSABLE_DOMAINS).some(d => domain.endsWith(`.${d}`));
-}
-
-// -------- Optional remote verifier (fail-open) ----
-async function verifyEmailRemote(email: string) {
-  const url = import.meta.env.EMAIL_VERIFY_URL;
-  const key = import.meta.env.EMAIL_VERIFY_KEY;
-  if (!url || !key) return { ok: true };
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-      body: JSON.stringify({ email })
-    });
-    if (!res.ok) return { ok: true }; // fail-open
-    const data = await res.json();
-    const deliverable = Boolean(
-      data?.deliverable ?? data?.result?.deliverable ?? data?.data?.deliverable ?? true
-    );
-    return { ok: deliverable };
-  } catch {
-    return { ok: true }; // fail-open
-  }
-}
-
-// ------------------ Body parsing ------------------
+// Parse helpers (keep your flexible body parsing)
 async function parseBody(req: Request) {
   const ct = req.headers.get('content-type') || '';
   if (ct.includes('application/json')) return await req.json();
@@ -69,7 +16,8 @@ async function parseBody(req: Request) {
   try { return await req.json(); } catch { return {}; }
 }
 
-// --------------------- Route ----------------------
+export const prerender = false;
+
 export const POST: APIRoute = async ({ request }) => {
   try {
     const body = await parseBody(request);
@@ -79,72 +27,63 @@ export const POST: APIRoute = async ({ request }) => {
       return new Response(null, { status: 204 });
     }
 
-    // Normalize inputs
-    const name     = (body.name ?? '').toString().trim();
-    const email    = (body.email ?? '').toString().trim().toLowerCase();
-    const phone    = (body.phone ?? '').toString().trim();
-    const message  = (body.message ?? body.messagePreview ?? '').toString().trim();
-    const company  = (body.company ?? '').toString().trim();
-    const website  = (body.website ?? body.site ?? '').toString().trim();
-    const industry = (body.industry ?? '').toString().trim();
-    const channel  = (body.channel ?? 'receptionist').toString();
-    const mode     = (body.mode ?? 'lead').toString();
-    const utm      = typeof body.utm === 'object' && body.utm ? body.utm : {};
-    const tz       = (body.tz ?? '').toString();
-    const ua       = (body.ua ?? '').toString();
+    // Normalize → Lead (plus a couple of optional passthrough fields)
+    const mode = (body.mode ?? 'lead').toString();
 
-    // ---- Validation (email-only required) ----
-    if (!isEmail(email)) {
-      return new Response('Invalid email', { status: 400 });
+    const lead: Lead & {
+      wantsBooking?: boolean;
+      consent?: boolean;
+      source?: string;
+    } = {
+      name:     (body.name ?? '').toString().trim(),
+      email:    (body.email ?? '').toString().trim().toLowerCase(),
+      phone:    (body.phone ?? '').toString().trim(),
+      company:  (body.company ?? '').toString().trim(),
+      website:  (body.website ?? body.site ?? '').toString().trim(),
+      industry: (body.industry ?? '').toString().trim(),
+      channel:  (body.channel ?? 'receptionist').toString(),
+      mode,
+      transcript: (body.message ?? body.messagePreview ?? '').toString().trim()
+        || 'Website request via AI receptionist',
+      utm:      typeof body.utm === 'object' && body.utm ? body.utm : {},
+      tz:       (body.tz ?? '').toString(),
+      ua:       (body.ua ?? '').toString(),
+      wantsBooking: Boolean(body.wantsBooking || /book|schedule|agendar/i.test(String(body.intent || body.message || ''))),
+
+      // NEW: pass through optional flags used by integrations
+      consent: Boolean(body.consent),
+      source:  (body.source ?? '').toString().trim(),
+    };
+
+    // For explicit consent updates, allow saving even if only email is present
+    if (mode === 'consent-update' && !lead.email) {
+      return new Response(JSON.stringify({ ok: false, error: 'Email required for consent update' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
-    if (isDisposable(email)) {
-      return new Response('Disposable email not allowed', { status: 400 });
-    }
-    const { ok: deliverable } = await verifyEmailRemote(email);
-    if (!deliverable) {
-      return new Response('Undeliverable email', { status: 400 });
-    }
 
-    // Prepare safe values
-    const safeName = name || '—';
-    const safeMessage = message || 'Website request via AI receptionist';
+    const result = await runIntegrations(lead);
 
-    // Insert (adjust column names to your schema)
-    const meta = { company, website, industry, tz, ua, mode, source: body.source ?? 'infusio-site' };
+    if (result?.status === 'invalid_email')     return new Response('Invalid email',      { status: 400 });
+    if (result?.status === 'need_valid_email')  return new Response('Undeliverable email',{ status: 400 });
 
-    const { data, error } = await supabaseService
-      .from('leads')
-      .insert({
-        name: safeName,
-        email,
-        phone,
-        message: safeMessage,
-        channel,
-        utm,
-        status: 'new',
-        meta
-      })
-      .select()
-      .single();
+    // Tiny server-side breadcrumb for debugging (shows in server logs only)
+    console.info('[lead] stored', {
+      mode: lead.mode,
+      email: lead.email || null,
+      phone: lead.phone || null,
+      id: result?.id ?? null
+    });
 
-    if (error) throw error;
-
-    // Notify (don’t fail request if email/telegram throw)
-    try { await sendEmail({ name: safeName, email, message: safeMessage }); } catch {}
-    try {
-      await notifyTelegram(
-        ` *Lead*\n• Name: *${safeName}*\n• Email: ${email}\n• Phone: ${phone || '—'}\n• Channel: ${channel}\n• Msg: ${safeMessage}\n• Company: ${company || '—'}`
-      );
-    } catch {}
-
-    return new Response(JSON.stringify({ ok: true, id: data.id }), {
+    return new Response(JSON.stringify({ ok: true, id: result?.id, bookingUrl: result?.bookingUrl }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (e: any) {
-    return new Response(
-      JSON.stringify({ ok: false, error: e?.message ?? 'Server error' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ ok: false, error: e?.message ?? 'Server error' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 };
