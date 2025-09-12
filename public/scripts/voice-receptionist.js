@@ -160,6 +160,25 @@
     return email;
   }
 
+  // --- Partial email correction helpers (domain-only) -----------------
+  const DOMAIN_ONLY_RE = /\b(gmail|hotmail|outlook|icloud|yahoo|proton)\b(?:\s*(?:\.|punto|dot)\s*)?(com|co|es|net|org)?\b/i;
+
+  function maybeDomainOnly(text=''){
+    const norm = normalizeEmailSpeech(text);
+    const m = norm.match(DOMAIN_ONLY_RE);
+    if (!m) return null;
+    const d = (m[1] || '').toLowerCase();
+    const t = (m[2] || 'com').toLowerCase();
+    return { domain: `${d}.${t}` };
+  }
+
+  function replaceCandidateDomain(candidate='', newDomain=''){
+    if (!candidate || !newDomain) return candidate;
+    if (!candidate.includes('@')) return candidate;
+    const local = candidate.split('@')[0];
+    return `${local}@${newDomain}`;
+  }
+
   function maybeExtractPhone(text){
     if (!text) return null;
     const n = wordsToDigits(text);
@@ -218,16 +237,16 @@
     return true;
   }
 
-  // Allow correction-by-repetition while awaiting confirmation
+  // Allow correction-by-repetition while awaiting confirmation (full or domain-only)
   function handleEmailConfirmTurn(text, lang){
     if (!awaitingEmailConfirm) return false;
 
-    // ¿El usuario dijo un NUEVO email? => actualiza y re-confirma
-    const em = maybeExtractEmail(text);
-    if (em && em !== emailCandidate) {
-      emailCandidate = em;
-      awaitingAnswer = true; // keep the confirm loop active
-      log('email corrected by user; now candidate =', emailCandidate);
+    // (A) Full new email -> update & re-confirm
+    const full = maybeExtractEmail(text);
+    if (full && full !== emailCandidate) {
+      emailCandidate = full;
+      awaitingAnswer = true;
+      log('email corrected by user (full); now candidate =', emailCandidate);
       speak(
         lang.startsWith('es')
           ? `Ahora tomé tu correo como ${emailCandidate}. ¿Está correcto? Di sí o no.`
@@ -238,12 +257,29 @@
       return true;
     }
 
-    const t = (text||'').toLowerCase();
+    // (B) Domain-only correction, e.g., "hotmail punto com"
+    const dom = maybeDomainOnly(text);
+    if (dom) {
+      const updated = replaceCandidateDomain(emailCandidate, dom.domain);
+      if (updated !== emailCandidate) {
+        emailCandidate = updated;
+        awaitingAnswer = true;
+        log('email domain corrected; now candidate =', emailCandidate);
+        speak(
+          lang.startsWith('es')
+            ? `Entendido. ¿Quedaría ${emailCandidate}? Di sí o no.`
+            : `Got it. Is it ${emailCandidate}? Say yes or no.`,
+          lang,
+          { shortGuard: true }
+        );
+        return true;
+      }
+    }
 
-    // ✔️ “sí” en español – incluye frases naturales
-    const yes = /\b(s[ií]|sí|si|claro|correcto|exacto|as[ií]\s*es|así\s*es|est[aá]\s*bien|de\s*acuerdo|vale|listo|ese\s*es|ese|eso\s*es|ok|okay)\b/.test(t);
-    // ❌ “no”/quiere corregir
-    const no  = /\b(no|nop|nope|incorrecto|casi|no\s*es|mejor|cambia|corrige)\b/.test(t);
+    // (C) Yes / No (ES+EN natural variants)
+    const t = (text||'').toLowerCase();
+    const yes = /\b(s[ií]|sí|si|claro|correcto|exacto|as[ií]\s*es|así\s*es|est[aá]\s*bien|de\s*acuerdo|vale|listo|ese\s*es|eso\s*es|ok|okay|yes|yep|yeah|right|correct)\b/.test(t);
+    const no  = /\b(no|nop|nope|incorrecto|casi|no\s*es|mejor|cambia|corrige|wrong)\b/.test(t);
 
     if (yes){
       lead.email = emailCandidate;
@@ -270,14 +306,15 @@
       );
       return true;
     }
-    // Ni sí/ni no (y no dio un nuevo email): seguimos escuchando en silencio
+
+    // Neither full email nor yes/no nor domain-only: keep listening silently
     return true;
   }
 
   // Consent detection (voice)
   function maybeConsent(text){
     const t = (text||'').toLowerCase();
-    if (!lead.consent && /\b(yes|yep|sure|ok|okay|agree|consent|sí|si|claro|de acuerdo|vale|listo)\b/.test(t)){
+    if (!lead.consent && /\b(yes|yep|yeah|sure|ok|okay|agree|consent|sí|si|claro|de acuerdo|vale|listo)\b/.test(t)){
       lead.consent = true;
       log('consent implied by utterance');
     }
@@ -632,7 +669,7 @@
         );
       }
 
-      // If we're waiting for email confirmation, ONLY handle yes/no or a new email
+      // If we're waiting for email confirmation, ONLY handle yes/no or a new email (or domain-only correction)
       if (awaitingEmailConfirm) {
         if (handleEmailConfirmTurn(utter, currentRecLang)) {
           return queueRestartListening(550);
