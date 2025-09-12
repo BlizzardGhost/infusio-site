@@ -51,8 +51,10 @@ const clients: Client[] = [
     display: false
   }
 ]
----
 
+// Only render when explicitly enabled
+const visible = clients.filter((c) => c.display === true)
+---
 <section id="clients" class="section wrap" aria-labelledby="clients-title">
   <h2 id="clients-title" style="margin:0 0 24px;">Selected Clients</h2>
   <p class="hero-sub" style="max-width:60ch;margin:0 0 24px;">
@@ -60,7 +62,7 @@ const clients: Client[] = [
   </p>
 
   <div class="grid-3">
-    {clients.filter((c) => c.display).map((c) => (
+    {visible.map((c) =>
       c.href ? (
         <a
           class="card client-card"
@@ -70,30 +72,30 @@ const clients: Client[] = [
           aria-label={`Visit ${c.title}`}
         >
           <div class="client-img">
-            <img 
-              src={c.img} 
-              alt={`${c.title} website screenshot`} 
-              loading="lazy" 
-              decoding="async" 
+            <img
+              src={c.img}
+              alt={`${c.title} website screenshot`}
+              loading="lazy"
+              decoding="async"
             />
           </div>
           <p class="client-title">{c.title}</p>
           <span class="client-tag">{c.tag}</span>
         </a>
       ) : (
-        <div class="card client-card">
+        <div class="card client-card" role="group" aria-label={c.title}>
           <div class="client-img">
-            <img 
-              src={c.img} 
-              alt={`${c.title} website screenshot`} 
-              loading="lazy" 
-              decoding="async" 
+            <img
+              src={c.img}
+              alt={`${c.title} website screenshot`}
+              loading="lazy"
+              decoding="async"
             />
           </div>
           <p class="client-title">{c.title}</p>
           <span class="client-tag">{c.tag}</span>
         </div>
       )
-    ))}
+    )}
   </div>
 </section>
