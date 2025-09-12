@@ -24,9 +24,10 @@ const chips = [
 import cfgRaw from "../config/receptionist";
 const cfg: any = cfgRaw ?? {};
 const CLIENT_CFG = {
-  system: typeof cfg.systemPrompt === "string" ? cfg.systemPrompt : null,
+  system:  typeof cfg.systemPrompt === "string" ? cfg.systemPrompt : null,
+  fewshot: Array.isArray(cfg.fewshot) ? cfg.fewshot : [],
   answers: (cfg.answers && typeof cfg.answers === "object") ? cfg.answers : {},
-  vars: (cfg.vars && typeof cfg.vars === "object") ? cfg.vars : {}
+  vars:    (cfg.vars && typeof cfg.vars === "object") ? cfg.vars : {}
 };
 ---
 
