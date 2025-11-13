@@ -1,16 +1,20 @@
 // /public/scripts/voice-receptionist.js
+// This script handles the voice interaction with the AI receptionist.
+// It uses the browser's SpeechRecognition and SpeechSynthesis APIs to
+// recognize the user's voice and speak the AI's response.
 (() => {
   const orb    = document.getElementById('voice-orb');
   const status = document.getElementById('voice-status');
   if (!orb || !status) return;
 
-  const Recognition = window.webkitSpeechRecognition || window.SpeechRecognition;
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const synth       = window.speechSynthesis;
 
   // Align with ReceptionistPanel data-* if present
   const ROOT     = document.querySelector('.recept') || document.body;
-  const CHAT_URL = ROOT?.dataset?.action || '/api/chat';
-  const LEAD_URL = ROOT?.dataset?.lead   || '/api/lead';
+  const BACKEND_URL = orb.dataset.backendUrl || '';
+  const CHAT_URL = ROOT?.dataset?.action || `${BACKEND_URL}/api/chat`;
+  const LEAD_URL = ROOT?.dataset?.lead   || `${BACKEND_URL}/api/lead`;
 
   // ---------------- Source-of-truth config (shared with text UI) ----------------
   const CLIENT_CFG = (() => {
@@ -69,6 +73,8 @@
   const log = (...a) => { if (DEBUG) console.debug('[voice]', ...a); };
 
   // ---------------- Speech normalization helpers ----------------
+  // These functions are used to normalize the user's speech,
+  // making it easier to parse and understand.
   const WORD_DIGITS = {
     'zero':'0','oh':'0','o':'0','one':'1','two':'2','to':'2','too':'2',
     'three':'3','four':'4','for':'4','five':'5','six':'6','seven':'7',
@@ -321,6 +327,8 @@
   }
 
   // ---------------- Lead send (must have CONFIRMED email for router) ----------------
+  // This function sends the captured lead information to the backend.
+  // It only sends the lead if the user has confirmed their email address.
   async function trySendLead(){
     if (lead.sent) return;
     if (!(lead.email && emailConfirmed && emailRe.test(lead.email))) return;
@@ -599,6 +607,8 @@
   }
 
   // ---------------- Recognizer loop ----------------
+  // This is the main loop of the voice receptionist.
+  // It listens for the user's voice, sends it to the AI, and speaks the response.
   if (!Recognition) {
     setStatus('Voice isn’t available in this browser. Try Chrome or Edge.');
     return;
@@ -614,8 +624,18 @@
     }, delay);
   }
   async function ensureMicAccess() {
-    try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); stream.getTracks().forEach(t => t.stop()); return true; }
-    catch { setStatus(currentRecLang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Mic permission blocked.'); return false; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      return true;
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        setStatus(currentRecLang.startsWith('es') ? 'Permiso de micrófono denegado.' : 'Mic permission denied.');
+      } else {
+        setStatus(currentRecLang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Mic permission blocked.');
+      }
+      return false;
+    }
   }
   function makeRecognizer() {
     const r = new Recognition();

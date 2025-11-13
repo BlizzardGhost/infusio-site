@@ -9,8 +9,8 @@
  *  - leadUrl:   lead capture endpoint (default /api/lead)
  */
 const {
-  actionUrl = "/api/chat",
-  leadUrl   = "/api/lead"
+  actionUrl = `${import.meta.env.PUBLIC_BACKEND_URL}/api/chat`,
+  leadUrl   = `${import.meta.env.PUBLIC_BACKEND_URL}/api/lead`
 } = Astro.props;
 
 /* Optional chips (pure UI) */
@@ -76,7 +76,6 @@ const CLIENT_CFG = {
   const input   = root?.querySelector('#chatInput');
   const chipsUI = root?.querySelector('#chips');
 
-  // ----- Read config from the page -----
   const CFG = (() => {
     try { return JSON.parse(document.getElementById('recept-config')?.textContent || "{}"); }
     catch { return {}; }
@@ -85,7 +84,6 @@ const CLIENT_CFG = {
   const ANSWERS = CFG.answers || {};
   const VARS    = CFG.vars || {};
 
-  // ----- Conversation state -----
   const history = [];
   if (SYSTEM) history.push({ role: 'system', content: SYSTEM });
 
@@ -95,19 +93,16 @@ const CLIENT_CFG = {
     name:'', email:'', phone:'',
     consent:false, consentAsked:false, consentPending:false, consentSynced:false,
     leadSent:false,
-    _hintName:false // whether we've pushed the "name known" hint
+    _hintName:false
   };
 
-  // --- Hydrate from previous session ---
   try {
     const saved = JSON.parse(localStorage.getItem('recept.state') || '{}');
     if (saved && typeof saved === 'object') Object.assign(state, saved);
   } catch {}
 
-  // Persist helper
   function persist(){ try { localStorage.setItem('recept.state', JSON.stringify(state)); } catch {} }
 
-  // ----- UI helpers -----
   function row(kind){ const r = document.createElement('div'); r.className = `rmsg ${kind}`; return r; }
   function bubble(text=''){ const b = document.createElement('div'); b.className = 'rbubble'; b.textContent = text; return b; }
   function user(text){ const r=row('user'); const b=bubble(text); r.appendChild(b); log.appendChild(r); log.scrollTop = log.scrollHeight; return b; }
@@ -121,11 +116,9 @@ const CLIENT_CFG = {
     return b;
   }
 
-  // ----- Lightweight capture (USER ONLY) -----
   const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
   const phoneRe = /\+?\d[\d\s().-]{6,}/;
 
-  // “my name is / soy / me llamo / i am / this is …”
   const namePhrases = /\b(?:my name is|i am|i’m|im|this is|soy|me llamo)\s+([a-záéíóúñ'-]{2,})(?:\s+([a-záéíóúñ'-]{2,}))?(?:\s+([a-záéíóúñ'-]{2,}))?/i;
   const nameStop = new Set(['the','ok','okay','thanks','thank','hola','hello','si','sí','yes','no','please']);
   function cleanWord(w){ return (w || '').replace(/[^a-záéíóúñ'-]/gi,'').toLowerCase(); }
@@ -133,11 +126,9 @@ const CLIENT_CFG = {
   function maybeCaptureFromUser(text){
     let changed = false;
 
-    // email / phone from the user's message
     if (!state.email){ const m = text.match(emailRe); if (m) { state.email = m[0].trim(); changed = true; } }
     if (!state.phone){ const m = text.match(phoneRe); if (m) { state.phone = m[0].trim(); changed = true; } }
 
-    // name: phrase-based first…
     if (!state.name){
       const nm = text.match(namePhrases);
       if (nm){
@@ -148,7 +139,6 @@ const CLIENT_CFG = {
           changed = true;
         }
       }
-      // …otherwise accept a single capitalized word (e.g., “Ana”)
       if (!state.name){
         const oneWord = text.trim().match(/^[A-ZÁÉÍÓÚÑ][a-záéíóúñ'-]{1,}$/);
         if (oneWord && !nameStop.has(oneWord[0].toLowerCase())){
@@ -158,7 +148,6 @@ const CLIENT_CFG = {
       }
     }
 
-    // consent only if we asked for it
     const t = (text || '').toLowerCase();
     if (!state.consent && state.consentPending && /\b(yes|yep|sure|okay|ok|agree|consent|sí|si|claro|de acuerdo)\b/.test(t)){
       state.consent = true;
@@ -168,7 +157,6 @@ const CLIENT_CFG = {
 
     if (changed) persist();
 
-    // if we just learned the name, push a tiny non-invasive hint so the model doesn't ask again
     if (state.name && !state._hintName){
       history.push({ role:'system', content:`The user's name is ${state.name}. Do not ask for their name again.` });
       state._hintName = true;
@@ -176,7 +164,6 @@ const CLIENT_CFG = {
     }
   }
 
-  // Ask consent once (after we have an email/phone)
   function maybeAskConsent(){
     if (state.consent || state.consentAsked) return;
     if (!(state.email || state.phone)) return;
@@ -186,7 +173,6 @@ const CLIENT_CFG = {
     persist();
   }
 
-  // ----- Lead capture: SILENT upsert -----
   async function trySendLead(){
     if (state.leadSent) return;
     if (!state.email && !state.phone) return;
@@ -218,7 +204,6 @@ const CLIENT_CFG = {
     }
   }
 
-  // If consent arrives after first send, update silently (once)
   let consentUpdateInFlight = false;
   async function tryUpdateConsent(){
     if (!state.consent || !state.email || state.consentSynced || consentUpdateInFlight) return;
@@ -238,7 +223,6 @@ const CLIENT_CFG = {
     }
   }
 
-  // ----- Streaming (LLM-first; local answers only as fallback) -----
   function extractChunk(payload){
     try{
       const j = JSON.parse(payload);
@@ -247,7 +231,6 @@ const CLIENT_CFG = {
     }catch{ return ''; }
   }
 
-  // Local quick answers (used only if the network/LLM call fails)
   const compiled = Object.entries(ANSWERS).map(([k, v]) => ({
     key: k,
     patterns: (v?.patterns || []).map(p => { try{ return new RegExp(p, 'i'); } catch { return null; } }).filter(Boolean),
@@ -324,7 +307,6 @@ const CLIENT_CFG = {
     }
   }
 
-  // Chips behave as type-ahead
   chipsUI?.addEventListener('click', (e) => {
     const btn = e.target.closest('.chip');
     if (!btn) return;
@@ -332,7 +314,6 @@ const CLIENT_CFG = {
     input.focus();
   });
 
-  // Main submit
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const raw = input.value.trim();
@@ -342,7 +323,7 @@ const CLIENT_CFG = {
 
     user(raw);
     history.push({ role:'user', content: raw });
-    maybeCaptureFromUser(raw);      // <-- capture ONLY user turns
+    maybeCaptureFromUser(raw);
     input.value = '';
 
     const _promptForThisTurn = haveHadAUserTurn
@@ -351,7 +332,6 @@ const CLIENT_CFG = {
     haveHadAUserTurn = true;
 
     const reply = await streamAI();
-    // IMPORTANT: no maybeCapture(reply) — never parse assistant messages
 
     if (reply && chipsUI && chipsUI.hidden) chipsUI.hidden = false;
 
@@ -360,7 +340,6 @@ const CLIENT_CFG = {
     tryUpdateConsent();
   });
 
-  // Enter = send, Shift+Enter = newline
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey){
       e.preventDefault();
