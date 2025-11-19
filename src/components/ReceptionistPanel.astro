@@ -1,0 +1,67 @@
+---
+/**
+ * ReceptionistPanel.astro — conversational receptionist (UI only)
+ * Personality, guardrails, quick answers, and variables come from:
+ *   src/config/receptionist.ts (default export)
+ *
+ * Props:
+ *  - actionUrl: AI chat endpoint (default /api/chat)
+ *  - leadUrl:   lead capture endpoint (default /api/lead)
+ */
+const {
+  actionUrl = "/api/chat",
+  leadUrl   = "/api/lead"
+} = Astro.props;
+
+/* Optional chips (pure UI) */
+const chips = [
+  { label: "Start 14-day trial", val: "I want my free trial" },
+  { label: "Report a bug",       val: "I want to report a bug" },
+  { label: "WhatsApp number?",   val: "What’s your WhatsApp number?" }
+];
+
+/* Static, safe import of config (no secrets to client) */
+import cfgRaw from "../config/receptionist";
+const cfg: any = cfgRaw ?? {};
+const CLIENT_CFG = {
+  system:  typeof cfg.systemPrompt === "string" ? cfg.systemPrompt : null,
+  fewshot: Array.isArray(cfg.fewshot) ? cfg.fewshot : [],
+  answers: (cfg.answers && typeof cfg.answers === "object") ? cfg.answers : {},
+  vars:    (cfg.vars && typeof cfg.vars === "object") ? cfg.vars : {}
+};
+---
+
+<div class="recept" data-action={actionUrl} data-lead={leadUrl} aria-label="AI receptionist chat">
+  <!-- tiny public config blob for the browser (no secrets) -->
+  <script type="application/json" id="recept-config">
+    {JSON.stringify(CLIENT_CFG)}
+  </script>
+
+  <!-- Conversation log (hidden until first message) -->
+  <div class="log" role="log" aria-live="polite" aria-relevant="additions" hidden></div>
+
+  <!-- Single big composer -->
+  <form class="composer" id="leadForm" novalidate>
+    <!-- Honeypot -->
+    <input type="text" name="hp" autocomplete="off" tabindex="-1" aria-hidden="true" class="hp">
+
+    <label for="chatInput" class="sr-only">Message</label>
+    <textarea
+      id="chatInput"
+      placeholder="Type your request — I’ll collect the basics and get you scheduled."
+    ></textarea>
+
+    <!-- Context chips (we unhide after first assistant reply) -->
+    <div class="chips" id="chips" hidden aria-label="Quick actions">
+      {chips.map(c => <button class="chip" type="button" data-pick={c.val}>{c.label}</button>)}
+    </div>
+
+    <button class="send" id="btnSend" type="submit" aria-label="Send">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </form>
+</div>
+
+<script src="../scripts/receptionist.js"></script>
