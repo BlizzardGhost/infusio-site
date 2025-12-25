@@ -11,7 +11,7 @@ const prompt   = 'Tap the orb to speak. I’ll listen and can book a call.';
     <p class="hero-sub">{subtitle}</p>
 
     <!-- Single CTA: the voice orb -->
-    <button id="voice-orb" class="voice-orb" aria-label="Talk to the AI Receptionist">
+    <button id="voice-orb" class="voice-orb" aria-label="Talk to the AI Receptionist" data-backend-url={import.meta.env.PUBLIC_BACKEND_URL}>
       <span class="pulse" aria-hidden="true"></span>
       <span class="glow" aria-hidden="true"></span>
       <span class="iconify" data-icon="mingcute:voice-line" aria-hidden="true"></span>
