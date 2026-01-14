@@ -76,6 +76,12 @@ const CLIENT_CFG = {
   const input   = root?.querySelector('#chatInput');
   const chipsUI = root?.querySelector('#chips');
 
+  // Demo switch: disable consent prompts/updates when ?demo=1 or ?consent=0
+  const qp = new URLSearchParams(location.search);
+  const DEMO_NO_CONSENT =
+    qp.get('demo') === '1' ||
+    qp.get('consent') === '0';
+
   // ----- Read config from the page -----
   const CFG = (() => {
     try { return JSON.parse(document.getElementById('recept-config')?.textContent || "{}"); }
@@ -103,6 +109,12 @@ const CLIENT_CFG = {
     const saved = JSON.parse(localStorage.getItem('recept.state') || '{}');
     if (saved && typeof saved === 'object') Object.assign(state, saved);
   } catch {}
+
+  // If demo disables consent, prevent consent prompts from appearing due to old localStorage state
+  if (DEMO_NO_CONSENT) {
+    state.consentAsked = true;
+    state.consentPending = false;
+  }
 
   // Persist helper
   function persist(){ try { localStorage.setItem('recept.state', JSON.stringify(state)); } catch {} }
@@ -158,9 +170,9 @@ const CLIENT_CFG = {
       }
     }
 
-    // consent only if we asked for it
+    // consent only if we asked for it (and demo isn't disabling consent)
     const t = (text || '').toLowerCase();
-    if (!state.consent && state.consentPending && /\b(yes|yep|sure|okay|ok|agree|consent|sí|si|claro|de acuerdo)\b/.test(t)){
+    if (!DEMO_NO_CONSENT && !state.consent && state.consentPending && /\b(yes|yep|sure|okay|ok|agree|consent|sí|si|claro|de acuerdo)\b/.test(t)){
       state.consent = true;
       state.consentPending = false;
       changed = true;
@@ -176,8 +188,9 @@ const CLIENT_CFG = {
     }
   }
 
-  // Ask consent once (after we have an email/phone)
+  // Ask consent once (after we have an email/phone) — disabled for demo via query param
   function maybeAskConsent(){
+    if (DEMO_NO_CONSENT) return;
     if (state.consent || state.consentAsked) return;
     if (!(state.email || state.phone)) return;
     bot("Quick check: may I store your details and send follow-ups about Infusio? (yes/no)");
@@ -201,7 +214,7 @@ const CLIENT_CFG = {
       name: state.name,
       email: state.email,
       phone: state.phone,
-      consent: !!state.consent,
+      consent: DEMO_NO_CONSENT ? false : !!state.consent,
       message: transcript,
       utm,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -218,9 +231,10 @@ const CLIENT_CFG = {
     }
   }
 
-  // If consent arrives after first send, update silently (once)
+  // If consent arrives after first send, update silently (once) — disabled for demo via query param
   let consentUpdateInFlight = false;
   async function tryUpdateConsent(){
+    if (DEMO_NO_CONSENT) return;
     if (!state.consent || !state.email || state.consentSynced || consentUpdateInFlight) return;
     consentUpdateInFlight = true;
     try{
