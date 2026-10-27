@@ -1,66 +1,138 @@
 ---
 type Item = { name: string; icon: string; href?: string };
+type Pillar = {
+  title: string;
+  badge: string;
+  lead: string;
+  items: Item[];
+};
 
-const stack: Item[] = [
-  // Core web
-  { name: "Astro",       icon: "simple-icons:astro", href: "https://astro.build" },
-  { name: "Vercel",      icon: "simple-icons:vercel", href: "https://vercel.com" },
-  { name: "Cloudflare",  icon: "simple-icons:cloudflare", href: "https://cloudflare.com" },
-  { name: "GitHub",      icon: "simple-icons:github", href: "https://github.com" },
-  { name: "Auth0",       icon: "simple-icons:auth0", href: "https://auth0.com" },
-  { name: "OpenSSL",     icon: "simple-icons:openssl", href: "https://www.openssl.org/" },
-
-  // Design & Ops
-  { name: "Adobe",       icon: "simple-icons:adobe", href: "https://www.adobe.com/express/" },
-  { name: "Figma",       icon: "simple-icons:figma", href: "https://figma.com" },
-  { name: "Replit",      icon: "simple-icons:replit", href: "https://replit.com" },
-  { name: "Lovable",     icon: "mdi:heart", href: "https://lovable.dev" },
-
-  // Data / CRM / Analytics
-  { name: "HubSpot",     icon: "simple-icons:hubspot", href: "https://hubspot.com" },
-  { name: "Google Analytics", icon: "simple-icons:googleanalytics", href: "https://marketingplatform.google.com/about/analytics/" },
-  { name: "Plausible",   icon: "simple-icons:plausibleanalytics", href: "https://plausible.io" },
-  { name: "Stripe",      icon: "simple-icons:stripe", href: "https://stripe.com" },
-  { name: "Microsoft 365", icon: "simple-icons:microsoft", href: "https://www.microsoft.com/microsoft-365" },
-
-  // Automations & Integrations
-  { name: "SendGrid",    icon: "simple-icons:sendgrid", href: "https://sendgrid.com" },
-  { name: "Zapier",      icon: "simple-icons:zapier", href: "https://zapier.com" },
-  { name: "Pipedream",   icon: "carbon:pipelines", href: "https://pipedream.com" },
-  { name: "Make.com",    icon: "simple-icons:make", href: "https://www.make.com" },
-  { name: "n8n",         icon: "simple-icons:n8n", href: "https://n8n.io" },
-  { name: "Telegram",    icon: "simple-icons:telegram", href: "https://core.telegram.org" },
-  { name: "WhatsApp",    icon: "simple-icons:whatsapp", href: "https://business.whatsapp.com/products/business-platform" },
-
-  // AI Layer
-  { name: "ChatGPT",     icon: "simple-icons:openai", href: "https://chat.openai.com" },
-  { name: "Mistral",     icon: "simple-icons:mistralai", href: "https://mistral.ai" },
-  { name: "Gemini",      icon: "simple-icons:googlegemini", href: "https://gemini.google.com/app" },
-  { name: "ElevenLabs",  icon: "simple-icons:elevenlabs", href: "https://elevenlabs.io" },
-  { name: "Sora",        icon: "mdi:play-circle-outline" },
-  { name: "Genspark",    icon: "mdi:sparkles" }
+const pillars: Pillar[] = [
+  {
+    title: "Channels & Reception",
+    badge: "Front-of-House",
+    lead: "Every inquiry captured gracefully where your clients already live.",
+    items: [
+      { name: "WhatsApp",         icon: "simple-icons:whatsapp",         href: "https://business.whatsapp.com/products/business-platform" },
+      { name: "Telegram",         icon: "simple-icons:telegram",         href: "https://core.telegram.org" },
+      { name: "Microsoft 365",     icon: "simple-icons:microsoft",        href: "https://www.microsoft.com/microsoft-365" },
+      { name: "Google Workspace", icon: "simple-icons:google",           href: "https://workspace.google.com" },
+      { name: "SendGrid",         icon: "simple-icons:sendgrid",         href: "https://sendgrid.com" }
+    ]
+  },
+  {
+    title: "Operations & Commerce",
+    badge: "Business Engines",
+    lead: "Automated pipelines, booking, payments, and respectful metrics.",
+    items: [
+      { name: "Stripe",           icon: "simple-icons:stripe",           href: "https://stripe.com" },
+      { name: "HubSpot",          icon: "simple-icons:hubspot",          href: "https://hubspot.com" },
+      { name: "Google Calendar",  icon: "simple-icons:googlecalendar",   href: "https://calendar.google.com" },
+      { name: "Plausible",        icon: "simple-icons:plausibleanalytics", href: "https://plausible.io" }
+    ]
+  },
+  {
+    title: "Calm Cloud & Intelligence",
+    badge: "Autonomous Core",
+    lead: "Zero-maintenance edge infrastructure, low-latency models, and orchestration.",
+    items: [
+      { name: "Astro",            icon: "simple-icons:astro",            href: "https://astro.build" },
+      { name: "Vercel",           icon: "simple-icons:vercel",           href: "https://vercel.com" },
+      { name: "Cloudflare",       icon: "simple-icons:cloudflare",       href: "https://cloudflare.com" },
+      { name: "n8n",              icon: "simple-icons:n8n",              href: "https://n8n.io" },
+      { name: "Make.com",         icon: "simple-icons:make",             href: "https://www.make.com" },
+      { name: "ChatGPT",          icon: "simple-icons:openai",           href: "https://chat.openai.com" },
+      { name: "Gemini",           icon: "simple-icons:googlegemini",     href: "https://gemini.google.com/app" },
+      { name: "ElevenLabs",       icon: "simple-icons:elevenlabs",       href: "https://elevenlabs.io" }
+    ]
+  }
 ];
 ---
 
 <section id="tech" class="section wrap" aria-labelledby="tech-title">
-  <h2 id="tech-title" class="tech-title">Our Tech Cloud</h2>
-  <p class="hero-sub tech-lead">
-    Future-proof by design — the platforms we infuse into every brew.
-  </p>
+  <div class="tech-header">
+    <h2 id="tech-title" class="tech-title">Integrations & Connectors</h2>
+    <p class="hero-sub tech-lead">
+      We integrate quietly with what you already use. Zero forced migrations, zero tech chaos.
+    </p>
+  </div>
 
-  <div class="tech-cloud" role="list">
-    {stack.map((t) => (
-      t.href ? (
-        <a class="logo-tile" role="listitem" href={t.href} target="_blank" rel="noopener noreferrer" aria-label={t.name}>
-          <span class="iconify" data-icon={t.icon} aria-hidden="true"></span>
-          <span class="label">{t.name}</span>
-        </a>
-      ) : (
-        <div class="logo-tile" role="listitem" aria-label={t.name} tabindex="0">
-          <span class="iconify" data-icon={t.icon} aria-hidden="true"></span>
-          <span class="label">{t.name}</span>
+  <div class="pillars-stack">
+    {pillars.map((p) => (
+      <div class="pillar-group">
+        <div class="pillar-head">
+          <span class="pillar-badge">{p.badge}</span>
+          <h3 class="pillar-title">{p.title}</h3>
+          <p class="pillar-lead">{p.lead}</p>
         </div>
-      )
+        <div class="tech-cloud" role="list">
+          {p.items.map((t) => (
+            t.href ? (
+              <a class="logo-tile" role="listitem" href={t.href} target="_blank" rel="noopener noreferrer" aria-label={t.name}>
+                <span class="iconify" data-icon={t.icon} aria-hidden="true"></span>
+                <span class="label">{t.name}</span>
+              </a>
+            ) : (
+              <div class="logo-tile" role="listitem" aria-label={t.name} tabindex="0">
+                <span class="iconify" data-icon={t.icon} aria-hidden="true"></span>
+                <span class="label">{t.name}</span>
+              </div>
+            )
+          ))}
+        </div>
+      </div>
     ))}
   </div>
 </section>
+
+<style>
+  .tech-header {
+    margin-bottom: 28px;
+  }
+  .pillars-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+  }
+  .pillar-group {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px;
+    padding: 24px 22px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
+  }
+  .pillar-head {
+    margin-bottom: 20px;
+  }
+  .pillar-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: rgba(45, 212, 191, 0.12);
+    border: 1px solid rgba(45, 212, 191, 0.28);
+    color: #9df7d7;
+    margin-bottom: 8px;
+  }
+  .pillar-title {
+    margin: 0 0 6px;
+    font-size: 1.35rem;
+    letter-spacing: 0.005em;
+    color: #fff;
+  }
+  .pillar-lead {
+    margin: 0;
+    font-size: 0.94rem;
+    color: var(--muted-2, #94a3b8);
+    max-width: 65ch;
+  }
+  @media (max-width: 680px) {
+    .pillar-group {
+      padding: 18px 14px;
+    }
+  }
+</style>

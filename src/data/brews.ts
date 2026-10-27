@@ -1,5 +1,5 @@
 // /src/data/brews.ts
-import type { Brew } from "../types/brew";
+import type { Brew } from "../types/brews";
 
 export const brews: Brew[] = [
   {
@@ -9,15 +9,15 @@ export const brews: Brew[] = [
     tagline: "A calm first sip.",
     icon: "fluent-emoji-high-contrast:leaf-fluttering-in-wind",
     blurb:
-      "Try the flavor before you commit. A lightweight AI contact form that delivers leads and transcripts to your inbox.",
+      "Experience ambient intake before committing. An intelligent concierge that screens inquiries, filters spam, and delivers structured briefings to your inbox.",
     features: [
-      "AI-powered contact form (text-only, single language, brand-labeled)",
-      "Leads + Transcript delivered to your email",
-      "Server-side keys hosted by us (secure + demo-safe)",
-      "14-day trial period",
-      "No setup or support included"
+      "Intelligent intake concierge (calm web interface)",
+      "Automated lead qualification & spam filtering",
+      "Daily executive briefing + email dispatch",
+      "14-day zero-risk trial (hosted infrastructure)",
+      "Zero disruption to current workflow"
     ],
-    sla: "Trial support is community-only (email reference docs).",
+    sla: "Trial reference docs & community onboarding.",
     ctaHref: "#book"
   },
   {
@@ -27,17 +27,16 @@ export const brews: Brew[] = [
     tagline: "Your clean base camp.",
     icon: "hugeicons:tea",
     blurb:
-      "Leave behind old tech headaches. Earl Grey gives you a fast, secure base with AI intake included.",
+      "Replace high-friction forms and old tech headaches. Earl Grey establishes a fast, zero-maintenance intelligent front door for your business.",
     features: [
-      "Website migration to Astro + Vercel AI Cloud (CDN, Firewall, scalable)",
-      "Development for up to 6 pages",
-      "Basic portfolio (up to 15 SKUs)",
-      "Single-language site",
-      "Modern SEO & Security hardening",
-      "Dashboard access: basic CMS, analytics & CRM",
-      "AI Receptionist (text-only, single language)"
+      "High-speed modern digital presence (Astro + Vercel Cloud)",
+      "24/7 Text Intake Receptionist & Lead Triage",
+      "Intelligent routing to team inbox",
+      "Daily executive digest of inquiries and intent",
+      "Zero-maintenance infrastructure (CDN, automated SSL, security hardening)",
+      "Private client dashboard (lead history & controls)"
     ],
-    sla: "Regular support: 48–72 hours.",
+    sla: "Standard support: 24–48 hours.",
     setup: "$1,550 setup",
     monthly: "$350/mo",
     ctaHref: "#book"
@@ -46,21 +45,19 @@ export const brews: Brew[] = [
     id: "matcha",
     tea: "Matcha",
     tier: "Growth",
-    tagline: "Daily ritual for momentum.",
+    tagline: "Daily operational momentum.",
     icon: "emojione-monotone:teacup-without-handle",
     blurb:
-      "Multilingual reach, bookings, payments, and AI tools that keep momentum steady every day.",
+      "Multilingual concierge, automated scheduling, payments, and workflow handoffs that keep your client pipeline moving quietly while you focus on your craft.",
     features: [
       "Everything in Earl Grey",
-      "Development for up to 9 pages",
-      "Bilingual site (English + Spanish)",
-      "Portfolio + Webstore (up to 50 SKUs)",
-      "Stripe integration (payments)",
-      "Booking/Calendar integration",
-      "External CRM/Funnel integration",
-      "Bilingual AI Receptionist (text-based)",
-      "AI assessment + basic tools tailored to your workflows",
-      "Dashboard: AI CMS, analytics, feature controls & CRM"
+      "Bilingual AI Concierge (English + Spanish text)",
+      "Multi-channel intake (Web + WhatsApp/Telegram concierge handoff)",
+      "Automated calendar booking (Google Calendar / Cal.com sync)",
+      "Stripe payment capture & invoicing",
+      "CRM & pipeline sync (HubSpot, Notion, or Airtable)",
+      "Automated follow-up sequences for qualified leads",
+      "Studio control panel with prompt tuning & telemetry"
     ],
     sla: "Priority support: 12–24 hours.",
     setup: "from $2,750 setup",
@@ -71,21 +68,22 @@ export const brews: Brew[] = [
     id: "oolong",
     tea: "Oolong",
     tier: "R&D • Bespoke",
-    tagline: "Your private tea house.",
+    tagline: "Your private AI systems lab.",
     icon: "game-icons:teapot-leaves",
     blurb:
-      "Custom AI systems, experiments, and dedicated support — a private lab where anything can be brewed.",
+      "Bespoke autonomous agents, voice intelligence, and custom workflow architectures designed specifically around your operational bottlenecks.",
     features: [
       "Everything in Matcha",
-      "Development for up to 12 pages + A/B testing",
-      "Custom AI Agents for systems & integrations",
-      "Voice AI Receptionist (multilingual)",
-      "Dedicated experiment runway & roadmap",
-      "Priority support with targets"
+      "Multilingual Voice AI Receptionist (low-latency conversational orb)",
+      "Custom internal agent workflows (n8n / API orchestration)",
+      "Private business knowledge base integration (RAG / documentation retrieval)",
+      "Custom API connectors & legacy tool automation",
+      "Dedicated R&D runway & roadmap co-design",
+      "VIP priority architect support"
     ],
-    sla: "Priority support: 12–24 hours.",
+    sla: "Direct architect access: <12 hours.",
     setup: "from $4,000 setup",
-    monthly: "custom monthly (by integrations)",
+    monthly: "custom monthly",
     ctaHref: "#book"
   }
 ];

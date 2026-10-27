@@ -36,30 +36,30 @@ const vars: ReceptionistConfig["vars"] = {
   plan_mint_en: "Mint Tea — Free Trial",
   plan_mint_es: "Té de menta — Prueba gratuita",
   plan_mint_blurb_en:
-    "A calm first sip. Lightweight AI contact form that delivers leads and transcripts to your inbox (14-day free trial).",
+    "A calm first sip. Experience ambient intake before committing: intelligent concierge screening inquiries, filtering spam, and delivering structured briefings (14-day free trial).",
   plan_mint_blurb_es:
-    "Un primer sorbo tranquilo. Formulario de contacto con IA que envía leads y transcripciones a tu correo (prueba de 14 días).",
+    "Un primer sorbo tranquilo. Concierge inteligente que filtra spam, califica prospectos y entrega resúmenes estructurados a tu correo (prueba de 14 días sin riesgo).",
 
   plan_earl_en: "Earl Grey — Starter",
   plan_earl_es: "Té Earl Grey — Inicio",
   plan_earl_blurb_en:
-    "Your clean base camp: fast, secure base with AI intake included. We’ll collect the lead and offer to schedule a quick call or WhatsApp follow-up.",
+    "Your clean base camp. Replace high-friction forms and old tech headaches with a fast, zero-maintenance intelligent front door for your business ($1,550 setup · $350/mo).",
   plan_earl_blurb_es:
-    "Tu campamento base limpio: base rápida y segura con registro por IA. Colectamos el lead y ofrecemos agendar una llamada o seguir por WhatsApp.",
+    "Tu campamento base limpio. Reemplaza formularios obsoletos con una presencia rápida y recepción inteligente 24/7 ($1,550 setup · $350/mes).",
 
   plan_matcha_en: "Matcha — Growth",
   plan_matcha_es: "Té Matcha — Crecimiento",
   plan_matcha_blurb_en:
-    "Daily momentum: multilingual reach, bookings, payments and AI tools that keep things steady every day.",
+    "Daily operational momentum. Multilingual concierge, automated scheduling, payments, and workflow handoffs that keep your client pipeline moving quietly (from $2,750 setup · $550/mo).",
   plan_matcha_blurb_es:
-    "Ritual diario: alcance multilingüe, reservas, pagos y herramientas de IA para mantener el impulso día a día.",
+    "Impulso operativo diario. Concierge bilingüe, agenda automatizada, cobros y sincronización con CRM que mantienen tu flujo activo (desde $2,750 setup · $550/mes).",
 
   plan_oolong_en: "Oolong — R&D • Bespoke",
   plan_oolong_es: "Té Oolong — I+D • A la medida",
   plan_oolong_blurb_en:
-    "Your private tea house: custom AI systems, experiments and dedicated support — a lab where anything can be brewed.",
+    "Your private AI systems lab. Bespoke autonomous agents, voice intelligence, and custom workflow architectures designed specifically around your operational bottlenecks (from $4,000 setup · custom monthly).",
   plan_oolong_blurb_es:
-    "Tu casa de té privada: sistemas de IA a medida, experimentos y soporte dedicado — un laboratorio para crear lo que necesites.",
+    "Tu laboratorio privado de sistemas de IA. Agentes autónomos a medida, inteligencia de voz y arquitecturas de flujo diseñadas para tus cuellos de botella (desde $4,000 setup · mensual a medida).",
 };
 
 /* =========================
