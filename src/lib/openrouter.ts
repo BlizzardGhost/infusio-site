@@ -50,7 +50,7 @@ export async function streamOpenRouter(
           messages: chat,
           temperature: 0.6,
           max_tokens: 500,
-          reasoning: { max_tokens: 0 }
+          reasoning: { effort: 'none' }
         }),
       });
 

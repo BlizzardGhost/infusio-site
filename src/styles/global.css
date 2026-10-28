@@ -155,6 +155,33 @@ h1,h2,h3,h4,h5,h6{
 .nav a{ opacity:.85; margin:0 8px; transition:opacity .15s ease }
 .nav a:hover, .nav a.active{ opacity:1 }
 
+/* Light theme overrides for Floating Header */
+:root[data-theme="light"] .head-pill,
+html[data-theme="light"] .head-pill {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+:root[data-theme="light"] .brand strong {
+  color: var(--ink-heading);
+}
+:root[data-theme="light"] .nav a {
+  color: var(--ink-body);
+}
+:root[data-theme="light"] .nav a:hover,
+:root[data-theme="light"] .nav a.active {
+  color: var(--ink-heading);
+}
+:root[data-theme="light"] .head-pill .btn-ghost {
+  border-color: rgba(0, 0, 0, 0.12);
+  color: var(--ink-heading);
+  background: rgba(0, 0, 0, 0.02);
+}
+:root[data-theme="light"] .head-pill .btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.20);
+}
+
 /* Header buttons */
 .btn{
   display:inline-flex; align-items:center; gap:10px;

@@ -376,6 +376,43 @@
   let echoGuardUntil = 0;
   let greeted = false;
 
+  // Echo suppression: store normalized phrases spoken by assistant
+  const recentAssistantPhrases = [];
+  function normalizeSpeechComparison(s = '') {
+    return s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function isEchoOfAssistant(utter) {
+    if (!utter) return false;
+    const cleanUtter = normalizeSpeechComparison(utter);
+    if (!cleanUtter || cleanUtter.length < 3) return false;
+    const utterWords = cleanUtter.split(' ').filter(w => w.length > 2);
+    if (!utterWords.length) return false;
+
+    for (const phrase of recentAssistantPhrases) {
+      if (!phrase) continue;
+      // Direct substring match
+      if (phrase.includes(cleanUtter) || cleanUtter.includes(phrase)) {
+        return true;
+      }
+      // Word overlap match
+      let matchCount = 0;
+      for (const w of utterWords) {
+        if (phrase.includes(w)) matchCount++;
+      }
+      if (utterWords.length >= 2 && matchCount / utterWords.length >= 0.5) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Language lock
   const ES_TOKENS   = /\b(hola|gracias|sí|claro|por favor|para|con|de|buen[oa]s|agendar|cita|correo|tel[eé]fono|automatizaciones|sitio|web|servicios|página|páginas)\b/i;
   const ES_ACCENTS  = /[áéíóúñ¿¡]/;
@@ -446,11 +483,14 @@
     if (!text) return;
     const cleanText = stripMarkdown(text);
     if (!cleanText) return;
-    const { longGuard = false, shortGuard = false, onEnd = null } = opts;
+    const { onEnd = null } = opts;
 
-    const LONG_GUARD = 1000;
-    const SHORT_GUARD = 600;
-    const DEFAULT_GUARD = 700;
+    // Track for echo suppression
+    const norm = normalizeSpeechComparison(cleanText);
+    if (norm) {
+      recentAssistantPhrases.push(norm);
+      if (recentAssistantPhrases.length > 8) recentAssistantPhrases.shift();
+    }
 
     (async () => {
       try {
@@ -460,8 +500,11 @@
         }
 
         await ensureVoiceReady();
-        // Stop recognizer while speaking
-        try { if (rec && listening) rec.stop(); } catch {}
+        // Force stop/abort recognizer while speaking
+        clearRestartTimer();
+        try { if (rec) rec.abort(); } catch {}
+        listening = false;
+        orb.classList.remove('listening');
 
         try { synth.cancel(); } catch {}
 
@@ -481,23 +524,31 @@
           orb.classList.remove('speaking');
         };
 
-        u.onstart = () => { speaking = true; orb.classList.add('speaking'); };
+        u.onstart = () => {
+          speaking = true;
+          orb.classList.add('speaking');
+          try { if (rec) rec.abort(); } catch {}
+          listening = false;
+          orb.classList.remove('listening');
+        };
         u.onerror = (err) => {
           console.warn('[voice] speech synthesis error', err);
           cleanupSpeaking();
           if (onEnd) onEnd();
-          if (conversationActive) queueRestartListening(400);
+          if (conversationActive) queueRestartListening(600);
         };
         u.onend   = () => {
           cleanupSpeaking();
 
-          const guard = longGuard ? LONG_GUARD : shortGuard ? SHORT_GUARD : DEFAULT_GUARD;
-          echoGuardUntil = Date.now() + guard;
+          // Room & speaker acoustic decay guard (1000ms minimum)
+          echoGuardUntil = Date.now() + 1000;
 
-          if (onEnd) onEnd();
+          if (onEnd) {
+            setTimeout(() => { if (conversationActive && !speaking) onEnd(); }, 600);
+          }
 
           if (conversationActive) {
-            queueRestartListening(shortGuard ? 450 : longGuard ? 650 : 500);
+            queueRestartListening(850);
             setStatus(langGuess.startsWith('es') ? 'Escuchando…' : 'Listening…');
           } else {
             setStatus('Tap the orb to speak.');
@@ -707,9 +758,24 @@
     };
 
     r.onresult = async (ev) => {
-      if (Date.now() < echoGuardUntil) { queueRestartListening(awaitingAnswer ? 700 : 500); return; }
+      if (Date.now() < echoGuardUntil || speaking) {
+        log('dropping input during echo guard / speaking');
+        if (conversationActive && !speaking) queueRestartListening(awaitingAnswer ? 700 : 500);
+        return;
+      }
       const utter = ev.results?.[0]?.[0]?.transcript?.trim();
-      if (!utter) { if (conversationActive) queueRestartListening(awaitingAnswer ? 700 : 500); else setStatus(r.lang.startsWith('es') ? 'No se entendió.' : 'Didn’t catch that.'); return; }
+      if (!utter) {
+        if (conversationActive) queueRestartListening(awaitingAnswer ? 700 : 500);
+        else setStatus(r.lang.startsWith('es') ? 'No se entendió.' : 'Didn’t catch that.');
+        return;
+      }
+
+      // Check and suppress acoustic self-echo from assistant's own voice
+      if (isEchoOfAssistant(utter)) {
+        log('Filtered acoustic self-echo:', utter);
+        if (conversationActive && !speaking) queueRestartListening(600);
+        return;
+      }
 
       log('UTTER:', utter);
       lastUser = utter;
@@ -838,20 +904,13 @@
     if (!rec) rec = makeRecognizer();
     if (rec && rec.lang !== currentRecLang) rec.lang = currentRecLang;
 
-    // Greet once right after starting, then immediately listen
+    // Greet once right after starting, then safely listen after acoustic guard
     if (!greeted) {
       greeted = true;
       const greet = currentRecLang.startsWith('es')
         ? 'Hola, soy el Asistente de Infusio. ¿En qué puedo ayudarte hoy?'
         : 'Welcome, I’m the Infusio Assistant. How can I assist you today?';
-      speak(greet, currentRecLang, {
-        shortGuard: true,
-        onEnd: () => {
-          if (conversationActive && !speaking && !listening) {
-            try { rec?.start(); } catch {}
-          }
-        }
-      });
+      speak(greet, currentRecLang);
       return;
     }
 
