@@ -45,20 +45,23 @@ export const POST: APIRoute = async ({ request }) => {
         ? messages
         : [{ role: 'user', content: String(message ?? '') }];
 
-    // Sanitize and bound payload length (prevent DoS)
-    const incoming = rawIncoming.slice(-10).map((msg: any) => ({
-      role: (msg.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
-      content: String(msg.content ?? '').slice(0, 1500)
-    }));
+    // Spec 001 / FR-012 (RC-7): the server owns the persona.
+    // 1) Drop ANY client-sent `system` message BEFORE mapping roles. Previously system/persona
+    //    text from the browser was re-labelled as a `user` turn, confusing the model and
+    //    allowing prompt injection via a fake "system" role.
+    // 2) Keep only the last 10 user/assistant turns and cap each at 1500 chars (DoS guard).
+    const incoming = rawIncoming
+      .filter((msg: any) => msg && (msg.role === 'user' || msg.role === 'assistant'))
+      .slice(-10)
+      .map((msg: any) => ({
+        role: msg.role as 'assistant' | 'user',
+        content: String(msg.content ?? '').slice(0, 1500)
+      }))
+      // Drop empty turns (e.g. a failed stream that pushed '').
+      .filter((msg) => msg.content.trim().length > 0);
 
-    // If the first incoming turn is a system message, drop it to avoid duplicate/competing system prompts
-    const trimmed =
-      incoming.length && (incoming[0] as any)?.role === 'system'
-        ? incoming.slice(1)
-        : incoming;
-
-    // Final conversation sent to OpenRouter
-    const composed = [...base, ...trimmed];
+    // Final conversation sent to OpenRouter: server persona + few-shots + sanitized turns.
+    const composed = [...base, ...incoming];
 
     return await streamOpenRouterResponse(null, model ?? null, composed);
   } catch (err: any) {

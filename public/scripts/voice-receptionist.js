@@ -1,927 +1,565 @@
 // /public/scripts/voice-receptionist.js
+// -----------------------------------------------------------------------------
+// Infusio hero "voice orb" receptionist (browser-side).
+// Spec:  specs/001-voice-receptionist-reliability/spec.md   (FR-001 … FR-014)
+// Tests: tests/voice-receptionist.test.mjs                  (AC-1 … AC-10)
+//
+// HOW IT WORKS (read this first when debugging):
+//   The orb is a strict HALF-DUPLEX state machine. Only one thing happens at a time:
+//
+//     IDLE ──tap──► SPEAKING ──TTS done + silence tail──► LISTENING ──final result──► THINKING
+//      ▲               ▲                                      │                         │
+//      │               └──────────────── reply ready ─────────┼─────────────────────────┘
+//      └──── tap (while LISTENING/THINKING) or 4 silent windows ┘
+//
+//   - The microphone (SpeechRecognition) is opened ONLY by startListening(), and only
+//     after speechSynthesis is fully silent + a short tail. This is what prevents the
+//     assistant from hearing its own voice (the old "answering loop").
+//   - Every recognizer instance gets a generation id (recGen). Events from older
+//     instances are ignored, so late/duplicate browser events cannot hijack the flow.
+//   - Every session gets an id (session). Async work (fetch, timers) checks it and
+//     quietly stops if the user ended/restarted the session meanwhile.
+//
+// DEBUGGING:
+//   - Add ?voicedebug=1 to the URL (or run localStorage.voiceDebug = '1') to see
+//     "[voice]" logs for every state change, mic open/close, and AI call.
+//   - In the console, window.__infusioVoice exposes { state, history, lead } live.
+// -----------------------------------------------------------------------------
 (() => {
-  const orb    = document.getElementById('voice-orb');
-  const status = document.getElementById('voice-status');
-  if (!orb || !status) return;
+  'use strict';
 
-  const Recognition = window.webkitSpeechRecognition || window.SpeechRecognition;
-  const synth       = window.speechSynthesis;
+  // ---------------------------------------------------------------------------
+  // 1) DOM hooks — the orb button and the status line live in HeroVoice.astro.
+  //    If they are missing (other pages), the script does nothing.
+  // ---------------------------------------------------------------------------
+  const orb = document.getElementById('voice-orb');
+  const statusEl = document.getElementById('voice-status');
+  if (!orb || !statusEl) return;
 
-  // Align with ReceptionistPanel data-* if present
-  const ROOT     = document.querySelector('.recept') || document.body;
+  // Browser speech APIs. Chrome/Edge expose webkitSpeechRecognition; Safari/Firefox may not.
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  const synth = window.speechSynthesis || null;
+
+  // Endpoints can be overridden by the text panel's data-* attributes (keeps both UIs in sync).
+  const ROOT = document.querySelector('.recept');
   const CHAT_URL = ROOT?.dataset?.action || '/api/chat';
-  const LEAD_URL = ROOT?.dataset?.lead   || '/api/lead';
+  const LEAD_URL = ROOT?.dataset?.lead || '/api/lead';
 
-  // ---------------- Source-of-truth config (shared with text UI) ----------------
-  const CLIENT_CFG = (() => {
-    try { return JSON.parse(document.getElementById('recept-config')?.textContent || '{}'); }
-    catch { return {}; }
-  })();
-
-  // Receptionist behavior: natural lead capture & appointment setting (guidelines, not scripts)
-  const SYSTEM = (CLIENT_CFG.system || [
-    'You are the Infusio Receptionist — friendly, concise, bilingual (EN/ES), and service-oriented.',
-    'Behave like a human receptionist: greet, clarify needs, suggest the next best step, and coordinate contact/booking details when helpful.',
-    'Prioritize scheduling: when the user shows interest or a concrete goal, guide to a short 10–15 min call and schedule it now via the connected Cal.com. Do not say you will email options; propose times, confirm, and finalize.',
-    'Capture details naturally (name, best email for the calendar invite, and phone) during the first 2–3 turns once interest is clear — not all at once, and only when relevant.',
-    'Confirm the email exactly as heard. Keep each turn to 1–2 short sentences. Avoid jargon and pushy sales tone.',
-    'Stick to the user’s language unless they explicitly switch.',
-    'We build fast Astro/Vercel websites, practical automations, ethical AI assistants, CRM/payments/calendar integrations, and an operator dashboard for SMBs.',
-    'We do not provide medical/spa services; we support those businesses with websites and automations.'
-  ]).toString();
-
-  const FEWSHOT = Array.isArray(CLIENT_CFG.fewshot) && CLIENT_CFG.fewshot.length
-    ? CLIENT_CFG.fewshot
-    : [
-        { role: 'user',      content: 'Hi' },
-        { role: 'assistant', content: 'Hi! I can help with your website or automations. What do you want to achieve first?' },
-        { role: 'user',      content: '¿Hacen sitios web?' },
-        { role: 'assistant', content: 'Sí. Creamos sitios rápidos con Astro/Vercel y automatizaciones. ¿Buscas leads, reservas o ventas primero?' }
-      ];
-  const convo = [{ role: 'system', content: SYSTEM }, ...FEWSHOT];
-
-  // ---------------- Lead-capture state ----------------
-  const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
-  const phoneRe = /\+?\d[\d\s().-]{6,}/;
-  const nameRe  = /\b(?:my name is|i am|i’m|im|this is|soy|me llamo)\s+([A-ZÁÉÍÓÚÑ][\p{L}\-']{1,})/iu;
-
-  // Hints that the utterance is about email; used to suppress name capture in those turns (ES/EN variants)
-  const EMAILISH_HINTS = /\b(correo(?:\s+electrónico)?|email|mail|e[-\s]?mail|arroba|aroba|arrova|arova|a\s*roba|gmail|outlook|hotmail|yahoo|icloud|proton|dot|punto|puntocom)\b|@/i;
-
-  const lead = {
-    name:'', email:'', phone:'',
-    consent:false, sent:false, sentAt:0
+  // ---------------------------------------------------------------------------
+  // 2) Tunables — every timing below exists to prevent a specific, observed symptom.
+  // ---------------------------------------------------------------------------
+  const CFG = {
+    TTS_TAIL_MS: 450,          // FR-002: wait after TTS ends before opening mic (speaker/room reverb decay).
+    TTS_POLL_MS: 100,          // FR-002: how often we re-check speechSynthesis.speaking while waiting.
+    RESTART_DELAY_MS: 250,     // Gap between silent listening windows (Chrome throws if restarted instantly).
+    MAX_SILENT_WINDOWS: 4,     // FR-011: end the session after this many windows with no speech (~30 s).
+    AI_TIMEOUT_MS: 15000,      // FR-007: abort /api/chat if the model hangs.
+    VOICES_TIMEOUT_MS: 1500,   // FR-009: never wait forever for the voiceschanged event.
+    MAX_HISTORY: 10,           // Turns sent to the server (server also caps at 10).
+    MAX_REPLY_SENTENCES: 3,    // Keep spoken replies short; long TTS = more chance of echo + boredom.
   };
 
-  // Email confirmation flow
-  let emailCandidate = '';
-  let awaitingEmailConfirm = false;  // asking: “is <email> correct?”
-  let emailConfirmed = false;
-
-  // Booking nudge / agreement tracking
-  let bookingSuggested = false;
-
-  // Generic “awaiting answer” flag (used to slow loop & avoid interruptions)
-  let awaitingAnswer = false;
-
-  // ---------------- Debug helpers ----------------
-  const DEBUG = true; // set false to silence logs
+  // ---------------------------------------------------------------------------
+  // 3) Debug logging (FR-014) — silent unless explicitly enabled.
+  // ---------------------------------------------------------------------------
+  const DEBUG = /[?&]voicedebug=1\b/.test(location.search || '') ||
+    (() => { try { return localStorage.getItem('voiceDebug') === '1'; } catch { return false; } })();
   const log = (...a) => { if (DEBUG) console.debug('[voice]', ...a); };
 
-  // ---------------- Speech normalization helpers ----------------
-  const WORD_DIGITS = {
-    'zero':'0','oh':'0','o':'0','one':'1','two':'2','to':'2','too':'2',
-    'three':'3','four':'4','for':'4','five':'5','six':'6','seven':'7',
-    'eight':'8','ate':'8','nine':'9'
-  };
-  function wordsToDigits(s=''){
-    return s.replace(/\b(zero|oh|o|one|two|to|too|three|four|for|five|six|seven|eight|ate|nine)\b/gi,
-      (m)=>WORD_DIGITS[m.toLowerCase()] ?? m);
-  }
-  function collapseSpelledLetters(s=''){
-    // "b o r i s at g m a i l dot com" -> "boris at gmail dot com"
-    const tokens = s.split(/\s+/);
-    const out = []; let buf = [];
-    const pushBuf = () => { if (buf.length) { out.push(buf.join('')); buf.length = 0; } };
-    for (const t of tokens) {
-      const isLetter = /^[a-záéíóúñ]$/i.test(t);
-      const isDigit  = /^[0-9]$/.test(t);
-      if (isLetter || isDigit) { buf.push(t.toLowerCase()); continue; }
-      pushBuf(); out.push(t);
-    }
-    pushBuf();
-    return out.join(' ');
-  }
-  function dedupeLocalPart(t=''){
-    // Fix "boris boris @gmail.com" => "boris @gmail.com" and "borisboris@gmail.com"
-    let prev;
-    for (let i=0;i<3;i++){
-      prev = t;
-      t = t.replace(/\b([a-z0-9._%+-]+)\s+\1(\s*@)/ig, '$1$2'); // word word @
-      t = t.replace(/\b([a-z0-9._%+-]+)\1@/ig, '$1@');          // wordword@
-      if (t === prev) break;
-    }
-    return t;
-  }
+  // ---------------------------------------------------------------------------
+  // 4) Runtime state — the ONLY mutable variables. Keep this list short.
+  // ---------------------------------------------------------------------------
+  const STATES = { IDLE: 'IDLE', SPEAKING: 'SPEAKING', LISTENING: 'LISTENING', THINKING: 'THINKING' };
+  let state = STATES.IDLE;     // FR-001: current state; change it only through setState().
+  let session = 0;             // Incremented on every start/stop; async callbacks compare against it.
+  let recGen = 0;              // FR-003: generation id of the current recognizer instance.
+  let rec = null;              // Current SpeechRecognition instance (one per listening window).
+  let currentUtterance = null; // Strong ref to the playing utterance (Chrome GC bug can drop onend otherwise).
+  let ttsWatchdog = null;      // Fallback timer in case the browser never fires utterance.onend.
+  let lastTtsEndAt = 0;        // Timestamp when TTS last stopped; used for the silence tail.
+  let silentWindows = 0;       // FR-011: consecutive listening windows with no result.
+  let greeted = false;         // Greet only once per page load.
 
-  function normalizeEmailSpeech(s=''){
-    let t = (s || '').toLowerCase().trim();
-    t = collapseSpelledLetters(t);
-    t = dedupeLocalPart(t);
+  const history = [];          // Conversation turns sent to /api/chat: { role: 'user'|'assistant', content }.
+  const turns = [];            // Human-readable transcript attached to the lead email.
+  const lead = { name: '', email: '', phone: '', sent: false };
+  let pendingEmail = '';       // FR-005: email awaiting a yes/no. Any unrelated utterance clears it.
 
-    // Variantes típicas que dicta el STT (ES/EN)
-    t = t
-      // "@"
-      .replace(/\b(a\s*roba|arro?ba|aroba|arrova|arova)\b/g, '@')
-      .replace(/\b(at|add|ad|hat)\b/g, '@')
-      // "."
-      .replace(/\b(punto|puntos|dot|period|point)\b/g, '.')
-      // "_" "-" "+"
-      .replace(/\b(underscore|guion(?:\s*bajo)?)\b/g, '_')
-      .replace(/\b(hyphen|dash|guion)\b/g, '-')
-      .replace(/\b(plus|más|mas)\b/g, '+')
-      // “hot mail” -> “hotmail”, “g mail” -> “gmail”
-      .replace(/\bhot\s*mail\b/g, 'hotmail')
-      .replace(/\bg\s*mail\b/g, 'gmail');
+  // ---------------------------------------------------------------------------
+  // 5) Language handling — lock to EN or ES on the first utterance; switch only on request.
+  // ---------------------------------------------------------------------------
+  let lang = (navigator.language || 'en-US').toLowerCase().startsWith('es') ? 'es-ES' : 'en-US';
+  let langLocked = false;
+  const isES = () => lang.startsWith('es');
+  const t = (en, es) => (isES() ? es : en); // tiny i18n helper for UI/status strings
+  const looksSpanish = (s) => /[áéíóúñ¿¡]/i.test(s) ||
+    /\b(hola|gracias|quiero|necesito|tienen|hacen|sitio|página|cuánto|cómo|qué|por favor|buenas?|correo)\b/i.test(s);
 
-    // Colapsa espacios solo alrededor de signos del email
-    t = t
-      .replace(/(\S)\s*@\s*(\S)/g, '$1@$2')
-      .replace(/(\S)\s*\.\s*(\S)/g, '$1.$2')
-      .replace(/(\S)\s*_\s*(\S)/g, '$1_$2')
-      .replace(/(\S)\s*-\s*(\S)/g, '$1-$2')
-      .replace(/(\S)\s*\+\s*(\S)/g, '$1+$2');
-
-    // “punto com/es/net/org”
-    t = t.replace(/\b(punto\s+)(com|co|es|net|org)\b/g, '.$2');
-
-    return t;
+  function updateLanguage(utter) {
+    if (/\b(english|in english|en inglés)\b/i.test(utter)) { lang = 'en-US'; langLocked = true; return; }
+    if (/\b(español|spanish|en español)\b/i.test(utter)) { lang = 'es-ES'; langLocked = true; return; }
+    if (!langLocked) { lang = looksSpanish(utter) ? 'es-ES' : 'en-US'; langLocked = true; }
   }
 
-  function maybeExtractEmail(text){
-    if (!text) return null;
+  // ---------------------------------------------------------------------------
+  // 6) State + UI — single place that changes state, orb classes, and status text.
+  // ---------------------------------------------------------------------------
+  const setStatus = (text) => { statusEl.textContent = text; };
 
-    const hits = [];
-    const pushMatches = (s, tag) => {
-      const m = s.match(emailRe);
-      if (m) hits.push(m[0].trim());
-      if (DEBUG) console.debug('[voice] email-scan (' + tag + '):', s);
-    };
-
-    // Raw primero (a veces Chrome clava el email perfecto)
-    pushMatches(text, 'raw');
-
-    // Normalizado (maneja “nombre arroba gmail punto com”, etc.)
-    const norm = normalizeEmailSpeech(text);
-    pushMatches(norm, 'norm');
-
-    const email = hits.length ? hits[hits.length - 1] : null; // preferir el último (permite corrección por repetición)
-    if (email) log('email detected:', email, 'from:', norm);
-    return email;
+  function setState(next, reason = '') {
+    if (state === next) return;
+    log(`state ${state} → ${next}`, reason);
+    state = next;
+    // CSS hooks in global.css: .voice-orb.listening / .speaking / .thinking
+    orb.classList.remove('listening', 'speaking', 'thinking');
+    if (next === STATES.LISTENING) orb.classList.add('listening');
+    if (next === STATES.SPEAKING) orb.classList.add('speaking');
+    if (next === STATES.THINKING) orb.classList.add('thinking');
+    const label = {
+      IDLE: t('Tap the orb to speak.', 'Toca el orbe para hablar.'),
+      SPEAKING: t('Speaking… tap to interrupt.', 'Hablando… toca para interrumpir.'),
+      LISTENING: t('Listening… tap to stop.', 'Escuchando… toca para detener.'),
+      THINKING: t('Thinking…', 'Pensando…'),
+    }[next];
+    setStatus(label);
   }
 
-  // --- Partial email correction helpers (domain-only) -----------------
-  const DOMAIN_ONLY_RE = /\b(gmail|hotmail|outlook|icloud|yahoo|proton)\b(?:\s*(?:\.|punto|dot)\s*)?(com|co|es|net|org)?\b/i;
+  // ---------------------------------------------------------------------------
+  // 7) Text-to-speech
+  // ---------------------------------------------------------------------------
+  let voices = [];
 
-  function maybeDomainOnly(text=''){
-    const norm = normalizeEmailSpeech(text);
-    const m = norm.match(DOMAIN_ONLY_RE);
-    if (!m) return null;
-    const d = (m[1] || '').toLowerCase();
-    const t = (m[2] || 'com').toLowerCase();
-    return { domain: `${d}.${t}` };
-  }
-
-  function replaceCandidateDomain(candidate='', newDomain=''){
-    if (!candidate || !newDomain) return candidate;
-    if (!candidate.includes('@')) return candidate;
-    const local = candidate.split('@')[0];
-    return `${local}@${newDomain}`;
-  }
-
-  function maybeExtractPhone(text){
-    if (!text) return null;
-    const n = wordsToDigits(text);
-    const m = n.match(phoneRe);
-    const p = m ? m[0].replace(/[^\d+]/g,'').trim() : null;
-    if (p) log('phone detected:', p, 'from:', text);
-    return p;
-  }
-
-  // ---- Safe capture: avoid stealing the first part of an email as a name
-  function captureName(text){
-    if (lead.name) return;
-    const lower = (text || '').toLowerCase();
-    if (EMAILISH_HINTS.test(lower)) return; // skip this turn if talking about email
-
-    // Si hay “mi correo es / email”, solo toma el fragmento antes de esa frase
-    const splitOnEmail = text.split(/\b(?:mi\s+correo\s+es|correo|email|e[-\s]?mail|my\s+email\s+is)\b/i)[0];
-    const m = splitOnEmail.match(nameRe);
-    if (m) { lead.name = (m[1] || '').trim(); log('name captured:', lead.name); }
-  }
-
-  function capturePhone(text){
-    if (lead.phone) return;
-    const p = maybeExtractPhone(text);
-    if (p) {
-      lead.phone = p;
-      if (!lead.email && !awaitingEmailConfirm && !emailConfirmed) {
-        askAndWait(
-          currentRecLang.startsWith('es')
-            ? '¿Cuál es tu mejor correo para la invitación del calendario?'
-            : 'What’s the best email for the calendar invite?',
-          currentRecLang
-        );
-      }
-    }
-  }
-
-  function askAndWait(line, lang){
-    awaitingAnswer = true;
-    speak(line, lang, { longGuard: true }); // extra quiet time after TTS
-  }
-
-  function maybeStartEmailConfirm(text, lang){
-    if (awaitingEmailConfirm || emailConfirmed) return false;
-    const em = maybeExtractEmail(text);
-    if (!em) return false;
-    emailCandidate = em;
-    awaitingEmailConfirm = true;
-    log('→ starting email confirm for:', emailCandidate);
-    askAndWait(
-      lang.startsWith('es')
-        ? `Tomé tu correo como ${emailCandidate}. ¿Está correcto? Di sí o no.`
-        : `I heard your email as ${emailCandidate}. Is that correct? Say yes or no.`,
-      lang
-    );
-    return true;
-  }
-
-  // Allow correction-by-repetition while awaiting confirmation (full or domain-only)
-  function handleEmailConfirmTurn(text, lang){
-    if (!awaitingEmailConfirm) return false;
-
-    // (A) Full new email -> update & re-confirm
-    const full = maybeExtractEmail(text);
-    if (full && full !== emailCandidate) {
-      emailCandidate = full;
-      awaitingAnswer = true;
-      log('email corrected by user (full); now candidate =', emailCandidate);
-      speak(
-        lang.startsWith('es')
-          ? `Ahora tomé tu correo como ${emailCandidate}. ¿Está correcto? Di sí o no.`
-          : `I now heard your email as ${emailCandidate}. Is that correct? Say yes or no.`,
-        lang,
-        { shortGuard: true }
-      );
-      return true;
-    }
-
-    // (B) Domain-only correction, e.g., "hotmail punto com"
-    const dom = maybeDomainOnly(text);
-    if (dom) {
-      const updated = replaceCandidateDomain(emailCandidate, dom.domain);
-      if (updated !== emailCandidate) {
-        emailCandidate = updated;
-        awaitingAnswer = true;
-        log('email domain corrected; now candidate =', emailCandidate);
-        speak(
-          lang.startsWith('es')
-            ? `Entendido. ¿Quedaría ${emailCandidate}? Di sí o no.`
-            : `Got it. Is it ${emailCandidate}? Say yes or no.`,
-          lang,
-          { shortGuard: true }
-        );
-        return true;
-      }
-    }
-
-    // (C) Yes / No (ES+EN natural variants)
-    const t = (text||'').toLowerCase();
-    const yes = /\b(s[ií]|sí|si|claro|correcto|exacto|as[ií]\s*es|así\s*es|est[aá]\s*bien|de\s*acuerdo|vale|listo|ese\s*es|eso\s*es|ok|okay|yes|yep|yeah|right|correct)\b/.test(t);
-    const no  = /\b(no|nop|nope|incorrecto|casi|no\s*es|mejor|cambia|corrige|wrong)\b/.test(t);
-
-    if (yes){
-      lead.email = emailCandidate;
-      emailCandidate = '';
-      awaitingEmailConfirm = false;
-      emailConfirmed = true;
-      awaitingAnswer = false;
-      log('email confirmed:', lead.email);
-      speak(lang.startsWith('es') ? 'Perfecto, gracias.' : 'Perfect, thanks.', lang, { shortGuard:true });
-      trySendLead();
-      return true;
-    }
-    if (no){
-      emailCandidate = '';
-      awaitingEmailConfirm = false;
-      emailConfirmed = false;
-      awaitingAnswer = false;
-      log('email rejected; asking again');
-      askAndWait(
-        lang.startsWith('es')
-          ? 'Sin problema. Por favor di tu correo de nuevo con claridad.'
-          : 'No problem. Please say your email again clearly.',
-        lang
-      );
-      return true;
-    }
-
-    // Neither full email nor yes/no nor domain-only: keep listening silently
-    return true;
-  }
-
-  // Consent detection (voice)
-  function maybeConsent(text){
-    const t = (text||'').toLowerCase();
-    if (!lead.consent && /\b(yes|yep|yeah|sure|ok|okay|agree|consent|sí|si|claro|de acuerdo|vale|listo)\b/.test(t)){
-      lead.consent = true;
-      log('consent implied by utterance');
-    }
-  }
-
-  // ---------------- Lead send (must have CONFIRMED email for router) ----------------
-  async function trySendLead(){
-    if (lead.sent) return;
-    if (!(lead.email && emailConfirmed && emailRe.test(lead.email))) return;
-
-    const now = Date.now();
-    if (now - lead.sentAt < 1200) return;
-
-    const transcript = turns.map(t => (t.who === 'user' ? 'User: ' : 'AI: ') + t.text).join('\n');
-    const utm = Object.fromEntries(new URLSearchParams(location.search));
-    const payload = {
-      source:   'infusio-site',
-      channel:  'voice',
-      mode:     'lead',
-      name:     lead.name || '',
-      email:    lead.email || '',
-      phone:    lead.phone || '',
-      consent:  !!lead.consent,
-      transcript,
-      utm,
-      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      ua: navigator.userAgent
-    };
-
-    try{
-      log('sending lead payload', payload);
-      const r = await fetch(LEAD_URL, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(payload)
-      });
-      if (!r.ok) { console.warn('[voice] /api/lead HTTP error', r.status); return; }
-      const jr = await r.json().catch(()=>null);
-      if (jr?.status === 'invalid_email' || jr?.status === 'need_valid_email') {
-        console.warn('[voice] router refused email:', jr?.status);
-        return;
-      }
-      lead.sent = true;
-      lead.sentAt = now;
-      log('lead sent OK');
-    }catch(e){
-      console.warn('[voice] lead send failed', e);
-    }
-  }
-
-  // ---------------- Runtime & language ----------------
-  const turns = []; // {who:'user'|'ai', text}
-  let conversationActive = false;
-  let listening = false;
-  let speaking  = false;
-  let rec       = null;
-  let lastUser  = '';
-  let restartTimer = null;
-  let echoGuardUntil = 0;
-  let greeted = false;
-
-  // Echo suppression: store normalized phrases spoken by assistant
-  const recentAssistantPhrases = [];
-  function normalizeSpeechComparison(s = '') {
-    return s
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function isEchoOfAssistant(utter) {
-    if (!utter) return false;
-    const cleanUtter = normalizeSpeechComparison(utter);
-    if (!cleanUtter || cleanUtter.length < 3) return false;
-    const utterWords = cleanUtter.split(' ').filter(w => w.length > 2);
-    if (!utterWords.length) return false;
-
-    for (const phrase of recentAssistantPhrases) {
-      if (!phrase) continue;
-      // Direct substring match
-      if (phrase.includes(cleanUtter) || cleanUtter.includes(phrase)) {
-        return true;
-      }
-      // Word overlap match
-      let matchCount = 0;
-      for (const w of utterWords) {
-        if (phrase.includes(w)) matchCount++;
-      }
-      if (utterWords.length >= 2 && matchCount / utterWords.length >= 0.5) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // Language lock
-  const ES_TOKENS   = /\b(hola|gracias|sí|claro|por favor|para|con|de|buen[oa]s|agendar|cita|correo|tel[eé]fono|automatizaciones|sitio|web|servicios|página|páginas)\b/i;
-  const ES_ACCENTS  = /[áéíóúñ¿¡]/;
-  const looksSpanish = (s) => !!s && (ES_TOKENS.test(s) || ES_ACCENTS.test(s));
-  let lockedLang = null; // 'en' | 'es'
-  function wantSwitchToES(s=''){ return /\b(español|habla en español|en español|switch to spanish)\b/i.test(s); }
-  function wantSwitchToEN(s=''){ return /\b(english|speak in english|en inglés|switch to english)\b/i.test(s); }
-  function nextLangFor(utter) {
-    if (!lockedLang) lockedLang = looksSpanish(utter) ? 'es' : 'en';
-    if (lockedLang === 'en' && wantSwitchToES(utter)) lockedLang = 'es';
-    if (lockedLang === 'es' && wantSwitchToEN(utter)) lockedLang = 'en';
-    return lockedLang === 'es' ? 'es-ES' : 'en-US';
-  }
-  let currentRecLang = (navigator.language || 'en-US').toLowerCase().startsWith('es') ? 'es-ES' : 'en-US';
-
-  // ---------------- UI helpers ----------------
-  const setStatus = (t) => { status.textContent = t; };
-
-  // ---------------- Voices (stable selection) ----------------
-  let voicesCache = [];
+  // FR-009: resolve as soon as voices exist, or after VOICES_TIMEOUT_MS no matter what.
   function loadVoices() {
     return new Promise((resolve) => {
-      const ready = () => {
-        voicesCache = (synth?.getVoices?.() || []).slice();
-        resolve(voicesCache);
-      };
-      const existing = synth?.getVoices?.() || [];
-      if (existing.length) { voicesCache = existing.slice(); return resolve(voicesCache); }
-      if ('onvoiceschanged' in synth) synth.onvoiceschanged = () => { ready(); };
-      else setTimeout(ready, 180);
+      const now = synth?.getVoices?.() || [];
+      if (now.length) { voices = now; return resolve(); }
+      const done = () => { voices = synth?.getVoices?.() || []; resolve(); };
+      try { synth?.addEventListener?.('voiceschanged', done, { once: true }); } catch {}
+      setTimeout(done, CFG.VOICES_TIMEOUT_MS);
     });
   }
-  const IS_EDGE = /\bEdg\//.test(navigator.userAgent);
-  const PREF = {
-    en_edge: [/^Microsoft (Aria|Jenny|Ava|Emma|Michelle|Christopher) Online \(Natural\).*English \(United States\)/i],
-    es_edge: [/^Microsoft (Dalia|Jorge|Paloma|Ximena|Maria|Luis|Carlos|Lorena|Andrea) Online \(Natural\).*Spanish/i],
-    en_web:  [/^Google US English$/i, /^Samantha$/i, /^Daniel\b.*United Kingdom/i],
-    es_web:  [/^Paulina$/i, /^M[oó]nica$/i, /^Google español( de Estados Unidos)?$/i]
-  };
-  function pickVoiceFor(langTag){
-    const voices = voicesCache.length ? voicesCache : (synth?.getVoices?.() || []);
-    const isES   = langTag.toLowerCase().startsWith('es');
-    const pool   = IS_EDGE ? (isES ? PREF.es_edge : PREF.en_edge) : (isES ? PREF.es_web : PREF.en_web);
-    for (const rx of pool){ const v = voices.find(v => rx.test(v.name)); if (v) return v; }
-    const byLang = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(langTag.toLowerCase()));
-    if (byLang) return byLang;
-    return voices[0] || null;
-  }
-  let selectedVoices = { 'en-US': null, 'es-ES': null };
 
-  async function ensureVoiceReady(){
-    if (!voicesCache.length) await loadVoices();
-    if (!selectedVoices['en-US']) selectedVoices['en-US'] = pickVoiceFor('en-US');
-    if (!selectedVoices['es-ES']) selectedVoices['es-ES'] = pickVoiceFor('es-ES');
+  // Prefer natural-sounding voices; fall back to any voice for the language, then any voice.
+  function pickVoice(langTag) {
+    const es = langTag.startsWith('es');
+    const preferred = es
+      ? [/Microsoft (Dalia|Paloma|Ximena|Elvira|Jorge).*Online/i, /^Paulina$/i, /^M[oó]nica$/i, /Google español/i]
+      : [/Microsoft (Aria|Jenny|Ava|Emma|Guy).*Online/i, /^Google US English$/i, /^Samantha$/i];
+    for (const rx of preferred) { const v = voices.find((x) => rx.test(x.name)); if (v) return v; }
+    return voices.find((v) => (v.lang || '').toLowerCase().startsWith(es ? 'es' : 'en')) || voices[0] || null;
   }
 
-  let speechWatchdog = null;
-
-  function stripMarkdown(text = '') {
-    return text
-      .replace(/[*_#`~>]/g, '')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  // Remove markdown/emoji so TTS doesn't read "asterisk asterisk".
+  function cleanForSpeech(text) {
+    return String(text || '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')        // [label](url) → label
+      .replace(/https?:\/\/\S+/g, '')                  // bare URLs are unreadable aloud
+      .replace(/[*_#`~>|]/g, '')                       // markdown symbols
+      .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '') // emoji
       .replace(/\s+/g, ' ')
       .trim();
   }
 
-  function speak(text, langGuess = 'en-US', opts = {}) {
-    if (!text) return;
-    const cleanText = stripMarkdown(text);
-    if (!cleanText) return;
-    const { onEnd = null } = opts;
+  // Keep the first N sentences so spoken replies stay short.
+  function limitSentences(text, n = CFG.MAX_REPLY_SENTENCES) {
+    const parts = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+    return parts.slice(0, n).join(' ').replace(/\s+/g, ' ').trim();
+  }
 
-    // Track for echo suppression
-    const norm = normalizeSpeechComparison(cleanText);
-    if (norm) {
-      recentAssistantPhrases.push(norm);
-      if (recentAssistantPhrases.length > 8) recentAssistantPhrases.shift();
+  /**
+   * speak(text): enter SPEAKING, play TTS, then hand control to the mic.
+   * FR-002: mic is closed BEFORE audio starts; it reopens only via startListening().
+   */
+  async function speak(text) {
+    const mySession = session;
+    const clean = cleanForSpeech(text);
+    if (!clean) { goListen('empty reply'); return; }
+
+    closeMic('about to speak');          // never leave a mic open under TTS
+    setState(STATES.SPEAKING, clean.slice(0, 60));
+    turns.push({ who: 'ai', text: clean });
+
+    if (!synth) { finishSpeaking(null, mySession); return; } // no TTS engine → just listen
+
+    await loadVoices();
+    if (mySession !== session || state !== STATES.SPEAKING) return; // user stopped/barged in meanwhile
+
+    // Chrome bug: calling cancel() right before speak() can swallow the new utterance.
+    // Only cancel if something is actually queued/playing.
+    if (synth.speaking || synth.pending) { try { synth.cancel(); } catch {} }
+
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = lang;
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    const v = pickVoice(lang);
+    if (v) u.voice = v;
+
+    currentUtterance = u; // strong reference (see state section)
+    u.onend = () => finishSpeaking(u, mySession);
+    u.onerror = (e) => { log('tts error', e?.error); finishSpeaking(u, mySession); };
+
+    // Watchdog: ~80 ms per character + 3 s. If onend never fires, we still move on.
+    clearTimeout(ttsWatchdog);
+    ttsWatchdog = setTimeout(() => { log('tts watchdog fired'); finishSpeaking(u, mySession); }, clean.length * 80 + 3000);
+
+    try { synth.speak(u); } catch (e) { log('synth.speak threw', e); finishSpeaking(u, mySession); }
+  }
+
+  // Called once per utterance (onend, onerror, or watchdog — whichever comes first).
+  function finishSpeaking(u, mySession) {
+    if (u && u !== currentUtterance) return;              // stale utterance (e.g. after barge-in)
+    if (mySession !== session || state !== STATES.SPEAKING) return;
+    clearTimeout(ttsWatchdog);
+    currentUtterance = null;
+    lastTtsEndAt = Date.now();
+    goListen('tts finished');
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8) Speech recognition (microphone) — FR-002 / FR-003 / FR-011
+  // ---------------------------------------------------------------------------
+
+  // Resolve when TTS is fully silent AND the reverb tail has passed.
+  async function waitForTtsSilence(mySession) {
+    while (synth && (synth.speaking || synth.pending)) {
+      if (mySession !== session) return false;
+      await new Promise((r) => setTimeout(r, CFG.TTS_POLL_MS));
     }
+    const remaining = lastTtsEndAt + CFG.TTS_TAIL_MS - Date.now();
+    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
+    return mySession === session;
+  }
 
-    (async () => {
-      try {
-        if (!synth) {
-          if (onEnd) onEnd();
-          return;
-        }
+  // Transition helper: go to LISTENING and open the mic.
+  function goListen(reason) {
+    setState(STATES.LISTENING, reason);
+    startListening();
+  }
 
-        await ensureVoiceReady();
-        // Force stop/abort recognizer while speaking
-        clearRestartTimer();
-        try { if (rec) rec.abort(); } catch {}
-        listening = false;
-        orb.classList.remove('listening');
+  // Close (abort) the current recognizer and invalidate its events by bumping recGen.
+  function closeMic(reason) {
+    if (!rec) return;
+    log('mic close:', reason);
+    const r = rec;
+    rec = null;
+    recGen++; // any event still in flight from `r` is now stale and will be ignored
+    try { r.abort(); } catch {}
+  }
 
-        try { synth.cancel(); } catch {}
+  /**
+   * startListening(): the ONLY function allowed to open the microphone (FR-003).
+   * Creates a fresh recognizer per window; Chrome is unreliable when re-start()ing one instance.
+   */
+  async function startListening() {
+    const mySession = session;
+    if (!(await waitForTtsSilence(mySession))) return;
+    if (state !== STATES.LISTENING || mySession !== session) return; // state changed while waiting
+    if (rec) return;                                                 // a mic is already open
 
-        const u = new SpeechSynthesisUtterance(cleanText);
-        u.lang = langGuess;
-        u.rate = 1.0; u.pitch = 1.0; u.volume = 1;
+    const myGen = ++recGen;
+    const r = new Recognition();
+    rec = r;
+    r.lang = lang;
+    r.continuous = false;      // one utterance per window → clean turn-taking
+    r.interimResults = false;  // final results only (interim results caused partial-sentence replies)
+    r.maxAlternatives = 1;
+    let gotResult = false;
 
-        const v = selectedVoices[langGuess] || pickVoiceFor(langGuess);
-        if (v) u.voice = v;
+    const isStale = () => myGen !== recGen || mySession !== session;
 
-        const cleanupSpeaking = () => {
-          if (speechWatchdog) {
-            clearTimeout(speechWatchdog);
-            speechWatchdog = null;
-          }
-          speaking = false;
-          orb.classList.remove('speaking');
-        };
+    r.onstart = () => { if (!isStale()) log('mic open (gen', myGen + ')', 'lang', r.lang); };
 
-        u.onstart = () => {
-          speaking = true;
-          orb.classList.add('speaking');
-          try { if (rec) rec.abort(); } catch {}
-          listening = false;
-          orb.classList.remove('listening');
-        };
-        u.onerror = (err) => {
-          console.warn('[voice] speech synthesis error', err);
-          cleanupSpeaking();
-          if (onEnd) onEnd();
-          if (conversationActive) queueRestartListening(600);
-        };
-        u.onend   = () => {
-          cleanupSpeaking();
-
-          // Room & speaker acoustic decay guard (1000ms minimum)
-          echoGuardUntil = Date.now() + 1000;
-
-          if (onEnd) {
-            setTimeout(() => { if (conversationActive && !speaking) onEnd(); }, 600);
-          }
-
-          if (conversationActive) {
-            queueRestartListening(850);
-            setStatus(langGuess.startsWith('es') ? 'Escuchando…' : 'Listening…');
-          } else {
-            setStatus('Tap the orb to speak.');
-          }
-        };
-
-        // Safety watchdog: max speech duration fallback in case browser drops onend
-        const maxDurationMs = Math.max(5000, (cleanText.length / 10) * 1000);
-        speechWatchdog = setTimeout(() => {
-          if (speaking) {
-            console.warn('[voice] speech watchdog triggered (onend dropped by browser)');
-            cleanupSpeaking();
-            if (onEnd) onEnd();
-            if (conversationActive) queueRestartListening(400);
-          }
-        }, maxDurationMs);
-
-        synth.speak(u);
-      } catch (e) {
-        console.warn('[voice] speak failed', e);
-        speaking = false;
-        orb.classList.remove('speaking');
-        if (onEnd) onEnd();
-        if (conversationActive) queueRestartListening(500);
+    r.onresult = (ev) => {
+      if (isStale() || state !== STATES.LISTENING) { log('ignored stale/late result'); return; }
+      // Collect final transcript(s) of this window.
+      let text = '';
+      for (let i = ev.resultIndex || 0; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        if (res.isFinal !== false) text += (res[0]?.transcript || '') + ' ';
       }
-    })();
-  }
+      text = text.trim();
+      if (!text) return;
+      gotResult = true;
+      silentWindows = 0;
+      handleUtterance(text);
+    };
 
-  // ---------------- Content fixups ----------------
-  const MEDICAL_WORDS = /\b(spa|massage|masaje|wellness|terapia|therapy|doctor|m[eé]dico|cl[ií]nica|clinic|acup(?:u|)nct(?:ure|ura)|fisioterapia|tratamiento|treatment)\b/i;
-  function userAskedMedical(s){ return MEDICAL_WORDS.test(s || ''); }
-
-  function cleanAPINoise(raw) {
-    if (!raw) return '';
-    return raw.replace(/^\s*(Object|choices?|index|delta|finish reason|logprobs|data)[:\s].*$/gmi, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
-  }
-  function deJargon(t) {
-    if (!t) return t;
-    t = t.replace(/\b(synergy|leverage|paradigm|revolutioni[sz]e|disrupt(?:ive)?|unlock|transformative|sherpa)\b/gi, '')
-         .replace(/\s+/g, ' ').trim();
-    const sentences = t.split(/(?<=[.!?])\s+/).filter(Boolean);
-    return sentences.slice(0, 2).join(' ');
-  }
-  function correctScope(reply, lastUserUtterance, lang) {
-    const asked = userAskedMedical(lastUserUtterance);
-    const replyMentions = MEDICAL_WORDS.test(reply);
-    if (!replyMentions) return reply;
-    if (asked) {
-      return lang.startsWith('es')
-        ? 'No ofrecemos servicios médicos ni de spa. Nos enfocamos en sitios Astro/Vercel y automatizaciones útiles. ¿Quieres agendar una llamada corta?'
-        : 'We don’t provide medical or spa services. We focus on Astro/Vercel sites and helpful automations. Want me to book a quick call?';
-    }
-    return lang.startsWith('es')
-      ? reply.replace(MEDICAL_WORDS, 'nuestros sitios web y automatizaciones').replace(/\s+/g, ' ').trim()
-      : reply.replace(MEDICAL_WORDS, 'our websites and automations').replace(/\s+/g, ' ').trim();
-  }
-
-  // Intent detection & booking bias
-  function detectIntent(s) {
-    s = (s || '').toLowerCase();
-    if (/\b(web|website|site|sitio|p[aá]gina)\b/.test(s)) return 'website';
-    if (/\b(automation|automations|automatizaciones|zapier|make|n8n)\b/.test(s)) return 'automation';
-    if (/\b(book|call|meet|meeting|agenda|agendar|cita|schedule|schedulear)\b/.test(s)) return 'book';
-    if (/\b(bug|issue|error|reporte?|reportar)\b/.test(s)) return 'bug';
-    if (/\b(whatsapp)\b/.test(s)) return 'whatsapp';
-    return 'generic';
-  }
-  function isAffirmative(s='') {
-    return /\b(yes|yep|yeah|sure|ok|okay|please|dale|va|claro|sí|si|de acuerdo|perfecto|vale|listo)\b/i.test(s);
-  }
-  function wantsToBookDirectly(s='') {
-    return /\b(book|schedule|call|meet|meeting|cita|agendar|agenda|reunión|reunion|tomorrow|today|esta semana|pr[oó]xima semana|next week|this week)\b/i.test(s);
-  }
-
-  function bookingUpgrade(reply, user, lang) {
-    if (lead.email || awaitingEmailConfirm) return { text: reply, nudged: false };
-    const intent = detectIntent(user);
-    const interested = (intent === 'website' || intent === 'automation' || intent === 'book');
-    if (!interested) return { text: reply, nudged: false };
-    const add = lang.startsWith('es')
-      ? '¿Quieres que te agende una llamada de 10–15 minutos?'
-      : 'Want me to book a 10–15 minute call?';
-    const out = (reply || '').trim();
-    const text = out ? `${out} ${add}` : add;
-    return { text, nudged: true };
-  }
-
-  function upgradeIfGeneric(reply, user, lang) {
-    const r = (reply || '').trim();
-    const tooShort = r.length < 18;
-    const genericish = /\b(i('?m| am) (here|happy) to help|how can i help|let me know|glad to help)\b/i.test(r);
-    if (!tooShort && !genericish) return r;
-    const intent = detectIntent(user);
-    if (lang.startsWith('es')) {
-      switch (intent) {
-        case 'website':   return 'Perfecto. ¿Qué debe lograr primero tu sitio: captar leads, reservas o ventas?';
-        case 'automation':return 'De acuerdo. ¿Qué tarea repetitiva quieres automatizar primero?';
-        case 'book':      return 'Puedo agendar una llamada de 10–15 minutos. ¿Esta semana o la próxima?';
-        case 'bug':       return 'Cuéntame el bug en una frase y, si puedes, el paso para reproducirlo.';
-        case 'whatsapp':  return 'Podemos integrar WhatsApp para leads y atención. ¿Te interesa?';
-        default:          return 'Puedo ayudarte con tu sitio y automatizaciones. ¿Qué quieres lograr primero?';
+    r.onerror = (ev) => {
+      if (isStale()) return;
+      const code = ev?.error || 'unknown';
+      log('mic error:', code);
+      if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture') {
+        stopConversation(t('Microphone blocked. Allow mic access or use the chat below.',
+                           'Micrófono bloqueado. Permite el acceso o usa el chat abajo.'));
       }
-    } else {
-      switch (intent) {
-        case 'website':   return 'Great. What should the site do first: leads, bookings, or sales?';
-        case 'automation':return 'Got it. What repetitive task do you want to automate first?';
-        case 'book':      return 'I can book a 10–15 minute intro. This week or next?';
-        case 'bug':       return 'Tell me the bug in one line and how to reproduce it.';
-        case 'whatsapp':  return 'We can add WhatsApp for leads and support. Interested?';
-        default:          return 'I can help with your website and automations. What do you want to achieve first?';
+      // 'no-speech', 'aborted', 'network' → onend follows and decides what to do.
+    };
+
+    r.onend = () => {
+      if (isStale()) return;
+      rec = null;
+      if (state !== STATES.LISTENING || gotResult) return; // result is being handled elsewhere
+      silentWindows++;
+      log('silent window', silentWindows, '/', CFG.MAX_SILENT_WINDOWS);
+      if (silentWindows >= CFG.MAX_SILENT_WINDOWS) {
+        stopConversation(t('No voice detected. Tap the orb when you are ready.',
+                           'No detecté tu voz. Toca el orbe cuando estés listo.'));
+        return;
       }
+      setTimeout(() => { if (!isStaleSession(mySession)) startListening(); }, CFG.RESTART_DELAY_MS);
+    };
+
+    try { r.start(); }
+    catch (e) {
+      log('recognizer.start threw', e?.message);
+      rec = null;
+      setTimeout(() => { if (!isStaleSession(mySession)) startListening(); }, CFG.RESTART_DELAY_MS * 2);
     }
   }
 
-  // ---------------- Backend call ----------------
-  function extractChunk(line) {
+  const isStaleSession = (s) => s !== session || state !== STATES.LISTENING;
+
+  // ---------------------------------------------------------------------------
+  // 9) Turn handling — one user utterance in, one spoken reply out.
+  // ---------------------------------------------------------------------------
+  async function handleUtterance(text) {
+    const mySession = session;
+    closeMic('got utterance');
+    setState(STATES.THINKING, `"${text}"`);
+    updateLanguage(text);
+    turns.push({ who: 'user', text });
+    log('user said:', text);
+
+    // (a) Local lead-capture side flow (FR-005, FR-013). Returns a reply or null.
+    const local = handleLeadCapture(text);
+    if (local) { await speak(local); return; }
+
+    // (b) Everything else goes to the AI.
+    history.push({ role: 'user', content: text });
+    let reply = '';
     try {
-      const j = JSON.parse(line);
-      const ch = j?.choices?.[0] ?? {};
-      return ch?.delta?.content ?? ch?.message?.content ?? j?.content ?? '';
+      reply = await askAI();
+    } catch (e) {
+      log('AI error:', e?.name || e?.message || e);
+    }
+    if (mySession !== session) return; // user ended the session while we waited
+
+    reply = limitSentences(cleanForSpeech(reply));
+    if (!reply) {
+      // FR-007: spoken fallback, keep the session alive.
+      reply = t("Sorry, I'm having trouble connecting right now. Could you say that again, or type in the chat below?",
+                'Perdón, tengo problemas de conexión. ¿Puedes repetirlo o escribir en el chat de abajo?');
+    } else {
+      history.push({ role: 'assistant', content: reply });
+    }
+    await speak(reply);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 10) Lead capture helpers (email / phone / name) — non-blocking by design.
+  // ---------------------------------------------------------------------------
+  const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+  const EMAIL_CUE = /@|\b(e-?mail|correo|arroba|gmail|hotmail|outlook|yahoo|icloud|proton)\b|\bdot com\b|\bpunto com\b/i;
+  const YES_RE = /^\s*(yes|yeah|yep|correct|right|that'?s right|exactly|sí|si|claro|correcto|exacto|así es|eso es)\b/i;
+  const NO_RE = /^\s*(no|nope|wrong|incorrect|incorrecto|no es)\b/i;
+  const NAME_RE = /\b(?:my name is|i am|i'm|this is|soy|me llamo|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,})/iu;
+
+  // Turn spoken email ("boris at gmail dot com", "b o r i s arroba gmail punto com") into text.
+  function spokenToEmail(s) {
+    let x = ` ${String(s).toLowerCase()} `;
+    // Join single spelled letters/digits: "b o r i s" → "boris"
+    x = x.replace(/\b((?:[a-z0-9]\s){2,}[a-z0-9])\b/g, (m) => m.replace(/\s/g, ''));
+    x = x
+      .replace(/\s(arroba|at)\s/g, '@')
+      .replace(/\s(punto|dot)\s/g, '.')
+      .replace(/\s(guion bajo|underscore)\s/g, '_')
+      .replace(/\s(guion|dash|hyphen)\s/g, '-')
+      .replace(/\bg mail\b/g, 'gmail')
+      .replace(/\bhot mail\b/g, 'hotmail')
+      .replace(/\s*@\s*/g, '@')
+      .replace(/(\S)\s*\.\s*(\S)/g, '$1.$2');
+    return (x.match(EMAIL_RE) || [null])[0];
+  }
+
+  /** Returns a local reply string if this utterance was a lead-capture turn, else null. */
+  function handleLeadCapture(text) {
+    // Opportunistic, silent captures (never block the conversation).
+    if (!lead.name) { const m = text.match(NAME_RE); if (m) lead.name = m[1]; }
+    if (!lead.phone) {
+      const digits = (text.match(/\+?\d[\d\s().-]{6,}\d/) || [''])[0].replace(/[^\d+]/g, '');
+      if (digits.replace(/\D/g, '').length >= 7) lead.phone = digits; // FR-013: ≥7 literal digits
+    }
+
+    // A new email in the utterance (only when the user is clearly talking about email).
+    const email = EMAIL_CUE.test(text) ? spokenToEmail(text) : null;
+    if (email) {
+      pendingEmail = email;
+      return t(`I heard ${email}. Is that correct?`, `Entendí ${email}. ¿Es correcto?`);
+    }
+
+    // Confirmation of a pending email.
+    if (pendingEmail) {
+      if (YES_RE.test(text)) {
+        lead.email = pendingEmail;
+        pendingEmail = '';
+        sendLead();
+        return t("Perfect, thanks! We'll send the calendar invite there. Anything else I can help with?",
+                 '¡Perfecto, gracias! Enviaremos la invitación ahí. ¿Algo más en lo que te ayude?');
+      }
+      if (NO_RE.test(text)) {
+        pendingEmail = '';
+        return t('No problem. Please say your email again, slowly.',
+                 'Sin problema. Dime tu correo de nuevo, despacio.');
+      }
+      // FR-005: unrelated utterance → drop the pending email and let the AI answer.
+      log('pending email dropped (unrelated utterance)');
+      pendingEmail = '';
+    }
+    return null;
+  }
+
+  // POST the lead once we have a confirmed email. Failures are logged, never spoken.
+  async function sendLead() {
+    if (lead.sent || !EMAIL_RE.test(lead.email)) return;
+    lead.sent = true; // set first to avoid double-sends from rapid turns
+    const payload = {
+      source: 'infusio-site', channel: 'voice', mode: 'lead',
+      name: lead.name, email: lead.email, phone: lead.phone, consent: true,
+      transcript: turns.map((x) => `${x.who === 'user' ? 'User' : 'AI'}: ${x.text}`).join('\n'),
+      utm: Object.fromEntries(new URLSearchParams(location.search || '')),
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ua: navigator.userAgent,
+    };
+    try {
+      const r = await fetch(LEAD_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      log('lead POST', r.status);
+      if (!r.ok) lead.sent = false; // allow a retry on the next confirmed email
+    } catch (e) {
+      lead.sent = false;
+      log('lead POST failed', e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 11) AI call — POST /api/chat, stream SSE, return the full reply text.
+  // ---------------------------------------------------------------------------
+  async function askAI() {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), CFG.AI_TIMEOUT_MS); // FR-007
+    try {
+      log('AI request, turns:', history.length);
+      const res = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // FR-012: only user/assistant turns; the server owns the persona/system prompt.
+        body: JSON.stringify({ mode: 'voice', locale: lang, messages: history.slice(-CFG.MAX_HISTORY) }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
+
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('text/event-stream') || !res.body) {
+        const j = await res.json().catch(() => ({}));
+        return j?.choices?.[0]?.message?.content || j?.content || '';
+      }
+
+      // FR-008: buffered SSE parser — network chunks can cut a "data: {...}" line in half.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let full = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep the (possibly partial) last line for the next chunk
+        for (const line of lines) full += parseSseLine(line);
+      }
+      full += parseSseLine(buffer); // flush whatever is left
+      return full.trim();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Extract the text delta from one SSE line ("data: {json}"). Comments/keep-alives return ''.
+  function parseSseLine(line) {
+    const s = line.trim();
+    if (!s.startsWith('data:')) return '';
+    const data = s.slice(5).trim();
+    if (!data || data === '[DONE]') return '';
+    try {
+      const j = JSON.parse(data);
+      const c = j?.choices?.[0];
+      return c?.delta?.content ?? c?.message?.content ?? '';
     } catch { return ''; }
   }
-  async function askAI(userText) {
-    const payload = { mode: 'voice', locale: currentRecLang, message: userText, history: convo, messages: convo };
-    const res = await fetch(CHAT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (ct.includes('text/event-stream') && res.body) {
-      const reader = res.body.getReader(); const dec = new TextDecoder(); let full = '';
-      while (true) {
-        const { value, done } = await reader.read(); if (done) break;
-        const chunk = dec.decode(value, { stream: true });
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim(); if (!data || data === '[DONE]') continue;
-          const piece = extractChunk(data); if (piece) full += piece;
-        }
-      }
-      return full.trim();
-    }
-    try {
-      const j = await res.json();
-      return (j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.delta?.content ?? j?.content ?? JSON.stringify(j)).trim();
-    } catch {
-      return (await res.text()).trim();
-    }
-  }
 
-  // ---------------- Recognizer loop & controls ----------------
-  function clearRestartTimer() { if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; } }
-  function queueRestartListening(delay = 500) {
-    clearRestartTimer();
-    if (!conversationActive) return;
-    restartTimer = setTimeout(() => {
-      if (!rec) return;
-      if (speaking) return;
-      try { if (rec.lang !== currentRecLang) rec.lang = currentRecLang; rec.start(); } catch {}
-    }, delay);
-  }
-  async function ensureMicAccess() {
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return true;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop());
-      return true;
-    } catch {
-      setStatus(currentRecLang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Mic permission blocked.');
-      return false;
-    }
-  }
-  function makeRecognizer() {
-    if (!Recognition) return null;
-    const r = new Recognition();
-    r.lang = currentRecLang;
-    r.continuous = false;      // short bursts; we re-arm ourselves
-    r.interimResults = false;  // only final results
-
-    r.onstart = () => {
-      listening = true;
-      orb.classList.add('listening');
-      setStatus(r.lang.startsWith('es') ? 'Escuchando… Toca para pausar.' : 'Listening… Tap to pause.');
-    };
-    r.onend   = () => {
-      listening = false;
-      orb.classList.remove('listening');
-      if (conversationActive && !speaking) queueRestartListening(awaitingAnswer ? 700 : 500);
-      else if (!conversationActive) setStatus('Tap the orb to speak.');
-    };
-    r.onspeechend = () => { try { r.stop(); } catch {} };
-    r.onerror = (e) => {
-      listening = false;
-      orb.classList.remove('listening');
-      if (!conversationActive) return;
-      const code = e?.error || 'unknown';
-      if (code === 'not-allowed' || code === 'service-not-allowed') {
-        conversationActive = false;
-        setStatus(r.lang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Microphone permission blocked.');
-        return;
-      }
-      if (code === 'no-speech' || code === 'aborted' || code === 'network') {
-        queueRestartListening(awaitingAnswer ? 700 : 550);
-      } else {
-        setStatus((r.lang.startsWith('es') ? 'Micrófono: ' : 'Microphone: ') + code);
-        queueRestartListening(700);
-      }
-    };
-
-    r.onresult = async (ev) => {
-      if (Date.now() < echoGuardUntil || speaking) {
-        log('dropping input during echo guard / speaking');
-        if (conversationActive && !speaking) queueRestartListening(awaitingAnswer ? 700 : 500);
-        return;
-      }
-      const utter = ev.results?.[0]?.[0]?.transcript?.trim();
-      if (!utter) {
-        if (conversationActive) queueRestartListening(awaitingAnswer ? 700 : 500);
-        else setStatus(r.lang.startsWith('es') ? 'No se entendió.' : 'Didn’t catch that.');
-        return;
-      }
-
-      // Check and suppress acoustic self-echo from assistant's own voice
-      if (isEchoOfAssistant(utter)) {
-        log('Filtered acoustic self-echo:', utter);
-        if (conversationActive && !speaking) queueRestartListening(600);
-        return;
-      }
-
-      log('UTTER:', utter);
-      lastUser = utter;
-      currentRecLang = nextLangFor(utter);
-      convo.push({ role: 'user', content: utter });
-      turns.push({ who:'user', text: utter });
-
-      // Capture user-provided data (safe)
-      captureName(utter);
-      capturePhone(utter);
-
-      // If user wants to book (or says yes after a nudge) and we still lack email, ask for email immediately (skip AI)
-      if ((wantsToBookDirectly(utter) || (bookingSuggested && isAffirmative(utter))) && !lead.email && !awaitingEmailConfirm && !emailConfirmed) {
-        bookingSuggested = false;
-        log('booking intent detected – asking for email');
-        return askAndWait(
-          currentRecLang.startsWith('es')
-            ? 'Genial. ¿Cuál es tu mejor correo para la invitación del calendario?'
-            : 'Great. What’s your best email for the calendar invite?',
-          currentRecLang
-        );
-      }
-
-      // If we're waiting for email confirmation, ONLY handle yes/no or a new email (or domain-only correction)
-      if (awaitingEmailConfirm) {
-        if (handleEmailConfirmTurn(utter, currentRecLang)) {
-          return queueRestartListening(550);
-        }
-        return queueRestartListening(550);
-      }
-
-      // If the user just gave an email, start confirmation flow and DO NOT answer with AI
-      if (maybeStartEmailConfirm(utter, currentRecLang)) {
-        return; // wait for user yes/no
-      }
-
-      maybeConsent(utter);
-
-      // If we asked a question (awaitingAnswer), don't generate AI chatter—just keep listening
-      if (awaitingAnswer) {
-        return queueRestartListening(600);
-      }
-
-      try {
-        setStatus(currentRecLang.startsWith('es') ? 'Pensando…' : 'Thinking…');
-
-        let raw = await askAI(utter);
-        raw = cleanAPINoise(raw) || (currentRecLang.startsWith('es')
-          ? 'Puedo ayudarte con tu sitio y automatizaciones.'
-          : 'I can help with your site and automations.');
-
-        let fixed = correctScope(raw, lastUser, currentRecLang);
-        fixed = deJargon(fixed);
-        fixed = upgradeIfGeneric(fixed, lastUser, currentRecLang);
-
-        // Add a booking nudge when appropriate (only if we still don’t have email)
-        const nudged = bookingUpgrade(fixed, lastUser, currentRecLang);
-        fixed = nudged.text;
-        if (nudged.nudged) bookingSuggested = true;
-
-        convo.push({ role: 'assistant', content: fixed });
-        turns.push({ who:'ai', text: fixed });
-
-        // Attempt to send (will only proceed if email is confirmed)
-        trySendLead();
-
-        setStatus(currentRecLang.startsWith('es') ? 'Hablando…' : 'Speaking…');
-        speak(fixed, currentRecLang);
-
-      } catch {
-        setStatus(currentRecLang.startsWith('es') ? 'Error de IA. Reintentando…' : 'AI error. Retrying…');
-        if (conversationActive) queueRestartListening(700);
-      }
-    };
-    return r;
-  }
-
-  // ---------------- Orb tap to start/stop ----------------
-  orb.addEventListener('click', async () => {
-    // Barge-in: interrupt speech
-    if (speaking) {
-      if (speechWatchdog) clearTimeout(speechWatchdog);
-      try { synth?.cancel(); } catch {}
-      speaking = false;
-      orb.classList.remove('speaking');
-      echoGuardUntil = Date.now() + 500;
-      if (conversationActive) {
-        queueRestartListening(450);
-        setStatus(currentRecLang.startsWith('es') ? 'Escuchando…' : 'Listening…');
-      } else {
-        setStatus('Tap the orb to speak.');
-      }
-      return;
-    }
-
-    // Stop active session
-    if (conversationActive) {
-      conversationActive = false;
-      clearRestartTimer();
-      awaitingAnswer = false;
-      bookingSuggested = false;
-      try { if (rec) rec.stop(); } catch {}
-      setStatus('Tap the orb to speak.');
-      return;
-    }
-
-    // Graceful fallback if SpeechRecognition is not supported in this browser
-    if (!Recognition) {
-      setStatus(currentRecLang.startsWith('es')
-        ? 'Voz no soportada aquí. Abriendo chat…'
-        : 'Voice recognition not available. Opening chat…');
-      const bookSec = document.getElementById('book') || document.querySelector('.recept');
-      if (bookSec) {
-        bookSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        const chatInput = bookSec.querySelector('input, textarea');
-        if (chatInput) setTimeout(() => chatInput.focus(), 600);
-      }
-      return;
-    }
-
-    if (!(await ensureMicAccess())) return;
-
-    conversationActive = true;
-    awaitingAnswer = false;
-    bookingSuggested = false;
-    if (!rec) rec = makeRecognizer();
-    if (rec && rec.lang !== currentRecLang) rec.lang = currentRecLang;
-
-    // Greet once right after starting, then safely listen after acoustic guard
+  // ---------------------------------------------------------------------------
+  // 12) Session control — start / stop / barge-in (FR-010)
+  // ---------------------------------------------------------------------------
+  function startConversation() {
+    session++;
+    silentWindows = 0;
+    log('session start', session);
     if (!greeted) {
       greeted = true;
-      const greet = currentRecLang.startsWith('es')
-        ? 'Hola, soy el Asistente de Infusio. ¿En qué puedo ayudarte hoy?'
-        : 'Welcome, I’m the Infusio Assistant. How can I assist you today?';
-      speak(greet, currentRecLang);
+      // Speak synchronously within the click (user activation) so browsers allow TTS.
+      speak(t("Hi, I'm the Infusio assistant. How can I help you today?",
+              'Hola, soy el asistente de Infusio. ¿En qué te puedo ayudar hoy?'));
+    } else {
+      goListen('session restart');
+    }
+  }
+
+  function stopConversation(message) {
+    session++; // invalidates every pending timer/fetch/recognizer callback
+    log('session stop', message || '');
+    closeMic('session stop');
+    clearTimeout(ttsWatchdog);
+    currentUtterance = null;
+    if (synth && (synth.speaking || synth.pending)) { try { synth.cancel(); } catch {} }
+    setState(STATES.IDLE, 'stop');
+    if (message) setStatus(message);
+  }
+
+  function bargeIn() {
+    log('barge-in');
+    clearTimeout(ttsWatchdog);
+    currentUtterance = null; // makes the cancelled utterance's onend a no-op
+    try { synth?.cancel(); } catch {}
+    lastTtsEndAt = Date.now();
+    goListen('barge-in');
+  }
+
+  orb.addEventListener('click', () => {
+    // No SpeechRecognition (Safari/Firefox): send the visitor to the text receptionist.
+    if (!Recognition) {
+      setStatus(t('Voice is not supported in this browser. Opening the chat…',
+                  'La voz no está disponible en este navegador. Abriendo el chat…'));
+      const target = document.getElementById('book') || document.querySelector('.recept');
+      target?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => target?.querySelector?.('input, textarea')?.focus?.(), 600);
       return;
     }
-
-    try { rec?.start(); } catch (err) {
-      console.warn('[voice] start exception:', err);
-      queueRestartListening(400);
-    }
+    if (state === STATES.IDLE) return startConversation();
+    if (state === STATES.SPEAKING) return bargeIn();
+    return stopConversation(); // LISTENING or THINKING → end session
   });
 
-  // Warm voices
-  if (synth && typeof synth.onvoiceschanged !== 'undefined') {
-    synth.onvoiceschanged = () => { synth.getVoices(); };
-  }
+  // Warm up the voice list early so the first reply doesn't wait on it.
+  if (synth) loadVoices();
+
+  // ---------------------------------------------------------------------------
+  // 13) Operator handle (FR-014) — read-only view for the browser console and tests.
+  // ---------------------------------------------------------------------------
+  window.__infusioVoice = {
+    get state() { return state; },
+    get lang() { return lang; },
+    get history() { return history.slice(); },
+    get lead() { return { ...lead, pendingEmail }; },
+  };
 })();

@@ -868,6 +868,21 @@ html[data-theme="light"] .head-pill {
   100%{ transform: scale(1.07); }
 }
 
+/* Spec 001 / FR-001: THINKING state (waiting on /api/chat). Mic is closed, TTS not started.
+   A slow "breathing" opacity tells the visitor their words were captured. */
+.voice-orb.thinking{
+  border-color: rgba(167, 139, 250, 0.7);
+  box-shadow: 0 0 0 4px rgba(167, 139, 250, 0.25), 0 22px 55px rgba(167, 139, 250, 0.3);
+  animation: thinkingBreath 1.1s ease-in-out infinite alternate;
+}
+@keyframes thinkingBreath{
+  0%{ opacity: .78; transform: scale(.98); }
+  100%{ opacity: 1; transform: scale(1.02); }
+}
+@media (prefers-reduced-motion: reduce){
+  .voice-orb.thinking{ animation: none; }
+}
+
 /* Utility: hide element on small screens */
 @media (max-width: 680px){
   .hide-mobile {
