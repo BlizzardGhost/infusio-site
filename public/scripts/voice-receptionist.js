@@ -432,9 +432,21 @@
     if (!selectedVoices['es-ES']) selectedVoices['es-ES'] = pickVoiceFor('es-ES');
   }
 
+  let speechWatchdog = null;
+
+  function stripMarkdown(text = '') {
+    return text
+      .replace(/[*_#`~>]/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function speak(text, langGuess = 'en-US', opts = {}) {
     if (!text) return;
-    const { longGuard = false, shortGuard = false } = opts;
+    const cleanText = stripMarkdown(text);
+    if (!cleanText) return;
+    const { longGuard = false, shortGuard = false, onEnd = null } = opts;
 
     const LONG_GUARD = 1000;
     const SHORT_GUARD = 600;
@@ -442,25 +454,47 @@
 
     (async () => {
       try {
+        if (!synth) {
+          if (onEnd) onEnd();
+          return;
+        }
+
         await ensureVoiceReady();
         // Stop recognizer while speaking
         try { if (rec && listening) rec.stop(); } catch {}
 
-        synth.cancel(); // ensure single utterance (prevents overlap)
-        const u = new SpeechSynthesisUtterance(text);
+        try { synth.cancel(); } catch {}
+
+        const u = new SpeechSynthesisUtterance(cleanText);
         u.lang = langGuess;
         u.rate = 1.0; u.pitch = 1.0; u.volume = 1;
 
         const v = selectedVoices[langGuess] || pickVoiceFor(langGuess);
         if (v) u.voice = v;
 
-        u.onstart = () => { speaking = true; orb.classList.add('speaking'); };
-        u.onend   = () => {
+        const cleanupSpeaking = () => {
+          if (speechWatchdog) {
+            clearTimeout(speechWatchdog);
+            speechWatchdog = null;
+          }
           speaking = false;
           orb.classList.remove('speaking');
+        };
+
+        u.onstart = () => { speaking = true; orb.classList.add('speaking'); };
+        u.onerror = (err) => {
+          console.warn('[voice] speech synthesis error', err);
+          cleanupSpeaking();
+          if (onEnd) onEnd();
+          if (conversationActive) queueRestartListening(400);
+        };
+        u.onend   = () => {
+          cleanupSpeaking();
 
           const guard = longGuard ? LONG_GUARD : shortGuard ? SHORT_GUARD : DEFAULT_GUARD;
           echoGuardUntil = Date.now() + guard;
+
+          if (onEnd) onEnd();
 
           if (conversationActive) {
             queueRestartListening(shortGuard ? 450 : longGuard ? 650 : 500);
@@ -470,9 +504,24 @@
           }
         };
 
+        // Safety watchdog: max speech duration fallback in case browser drops onend
+        const maxDurationMs = Math.max(5000, (cleanText.length / 10) * 1000);
+        speechWatchdog = setTimeout(() => {
+          if (speaking) {
+            console.warn('[voice] speech watchdog triggered (onend dropped by browser)');
+            cleanupSpeaking();
+            if (onEnd) onEnd();
+            if (conversationActive) queueRestartListening(400);
+          }
+        }, maxDurationMs);
+
         synth.speak(u);
       } catch (e) {
         console.warn('[voice] speak failed', e);
+        speaking = false;
+        orb.classList.remove('speaking');
+        if (onEnd) onEnd();
+        if (conversationActive) queueRestartListening(500);
       }
     })();
   }
@@ -598,11 +647,7 @@
     }
   }
 
-  // ---------------- Recognizer loop ----------------
-  if (!Recognition) {
-    setStatus('Voice isn’t available in this browser. Try Chrome or Edge.');
-    return;
-  }
+  // ---------------- Recognizer loop & controls ----------------
   function clearRestartTimer() { if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; } }
   function queueRestartListening(delay = 500) {
     clearRestartTimer();
@@ -614,10 +659,18 @@
     }, delay);
   }
   async function ensureMicAccess() {
-    try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); stream.getTracks().forEach(t => t.stop()); return true; }
-    catch { setStatus(currentRecLang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Mic permission blocked.'); return false; }
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return true;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      return true;
+    } catch {
+      setStatus(currentRecLang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Mic permission blocked.');
+      return false;
+    }
   }
   function makeRecognizer() {
+    if (!Recognition) return null;
     const r = new Recognition();
     r.lang = currentRecLang;
     r.continuous = false;      // short bursts; we re-arm ourselves
@@ -626,7 +679,7 @@
     r.onstart = () => {
       listening = true;
       orb.classList.add('listening');
-      setStatus(r.lang.startsWith('es') ? 'Escuchando… Toca para detener.' : 'Listening… Tap to stop.');
+      setStatus(r.lang.startsWith('es') ? 'Escuchando… Toca para pausar.' : 'Listening… Tap to pause.');
     };
     r.onend   = () => {
       listening = false;
@@ -636,10 +689,21 @@
     };
     r.onspeechend = () => { try { r.stop(); } catch {} };
     r.onerror = (e) => {
-      listening = false; orb.classList.remove('listening'); if (!conversationActive) return;
+      listening = false;
+      orb.classList.remove('listening');
+      if (!conversationActive) return;
       const code = e?.error || 'unknown';
-      if (code === 'no-speech' || code === 'aborted' || code === 'network') queueRestartListening(awaitingAnswer ? 700 : 550);
-      else { setStatus((r.lang.startsWith('es') ? 'Error de micrófono: ' : 'Mic error: ') + code); queueRestartListening(700); }
+      if (code === 'not-allowed' || code === 'service-not-allowed') {
+        conversationActive = false;
+        setStatus(r.lang.startsWith('es') ? 'Permiso de micrófono bloqueado.' : 'Microphone permission blocked.');
+        return;
+      }
+      if (code === 'no-speech' || code === 'aborted' || code === 'network') {
+        queueRestartListening(awaitingAnswer ? 700 : 550);
+      } else {
+        setStatus((r.lang.startsWith('es') ? 'Micrófono: ' : 'Microphone: ') + code);
+        queueRestartListening(700);
+      }
     };
 
     r.onresult = async (ev) => {
@@ -727,40 +791,74 @@
   orb.addEventListener('click', async () => {
     // Barge-in: interrupt speech
     if (speaking) {
-      synth.cancel(); speaking = false; orb.classList.remove('speaking');
+      if (speechWatchdog) clearTimeout(speechWatchdog);
+      try { synth?.cancel(); } catch {}
+      speaking = false;
+      orb.classList.remove('speaking');
       echoGuardUntil = Date.now() + 500;
-      if (conversationActive) { queueRestartListening(450); setStatus(currentRecLang.startsWith('es') ? 'Escuchando…' : 'Listening…'); }
-      else setStatus('Tap the orb to speak.');
+      if (conversationActive) {
+        queueRestartListening(450);
+        setStatus(currentRecLang.startsWith('es') ? 'Escuchando…' : 'Listening…');
+      } else {
+        setStatus('Tap the orb to speak.');
+      }
       return;
     }
-    // Stop session
+
+    // Stop active session
     if (conversationActive) {
-      conversationActive = false; clearRestartTimer(); awaitingAnswer = false; bookingSuggested = false;
-      try { rec && rec.stop(); } catch {}
+      conversationActive = false;
+      clearRestartTimer();
+      awaitingAnswer = false;
+      bookingSuggested = false;
+      try { if (rec) rec.stop(); } catch {}
       setStatus('Tap the orb to speak.');
       return;
     }
-    // Start session
-    if (!Recognition) { setStatus('Voice not available here.'); return; }
+
+    // Graceful fallback if SpeechRecognition is not supported in this browser
+    if (!Recognition) {
+      setStatus(currentRecLang.startsWith('es')
+        ? 'Voz no soportada aquí. Abriendo chat…'
+        : 'Voice recognition not available. Opening chat…');
+      const bookSec = document.getElementById('book') || document.querySelector('.recept');
+      if (bookSec) {
+        bookSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const chatInput = bookSec.querySelector('input, textarea');
+        if (chatInput) setTimeout(() => chatInput.focus(), 600);
+      }
+      return;
+    }
+
     if (!(await ensureMicAccess())) return;
 
     conversationActive = true;
     awaitingAnswer = false;
     bookingSuggested = false;
     if (!rec) rec = makeRecognizer();
-    if (rec.lang !== currentRecLang) rec.lang = currentRecLang;
+    if (rec && rec.lang !== currentRecLang) rec.lang = currentRecLang;
 
-    // Greet once right after starting (no emoji)
+    // Greet once right after starting, then immediately listen
     if (!greeted) {
       greeted = true;
       const greet = currentRecLang.startsWith('es')
-        ? 'Hola, soy el Asistente de Infusio. ¿Como puedo ayudarte hoy?'
+        ? 'Hola, soy el Asistente de Infusio. ¿En qué puedo ayudarte hoy?'
         : 'Welcome, I’m the Infusio Assistant. How can I assist you today?';
-      speak(greet, currentRecLang, { shortGuard:true });
+      speak(greet, currentRecLang, {
+        shortGuard: true,
+        onEnd: () => {
+          if (conversationActive && !speaking && !listening) {
+            try { rec?.start(); } catch {}
+          }
+        }
+      });
       return;
     }
 
-    try { rec.start(); } catch {}
+    try { rec?.start(); } catch (err) {
+      console.warn('[voice] start exception:', err);
+      queueRestartListening(400);
+    }
   });
 
   // Warm voices

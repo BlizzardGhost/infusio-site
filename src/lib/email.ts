@@ -2,7 +2,7 @@
 type SendArgs = {
   to: string | string[];
   subject: string;
-  html: string;
+  html?: string;
   text?: string;
   from?: string;
 };
@@ -14,13 +14,15 @@ export async function sendEmail({ to, subject, html, text, from }: SendArgs) {
   const fromAddr = from ?? import.meta.env.RESEND_FROM;
   if (!apiKey || !fromAddr) throw new Error('Resend env vars missing');
 
+  const finalHtml = html || (text ? `<p style="white-space:pre-wrap">${text.replace(/</g, '&lt;').replace(/\n/g, '<br/>')}</p>` : '');
+
   const res = await fetch(RESEND_API, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ from: fromAddr, to, subject, html, text }),
+    body: JSON.stringify({ from: fromAddr, to, subject, html: finalHtml, text }),
   });
 
   if (!res.ok) {
