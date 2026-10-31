@@ -1,5 +1,9 @@
 // tests/voice-receptionist.test.mjs
-// Purpose: Automated acceptance tests for the hero voice orb (Spec 001, AC-1 … AC-10).
+// Purpose: Automated acceptance tests for the hero voice orb:
+//   - Spec 001 (AC-1 … AC-10): half-duplex state machine, barge-in, lead capture, SSE buffering.
+//   - Spec 002 (AC-202 … AC-206): natural conversation config (no fake FEWSHOT pitch),
+//     greeting recorded in history, interim live speech preview + fast silence commit,
+//     and visitor metadata (lead.name) forwarded to /api/chat.
 // How it works (for debug operators):
 //   - Loads public/scripts/voice-receptionist.js into an isolated Node `vm` context.
 //   - Replaces browser APIs with controllable fakes:
@@ -7,7 +11,7 @@
 //       FakeSynth        → window.speechSynthesis         (we decide when TTS finishes)
 //       fetch            → scripted /api/chat (SSE) and /api/lead responses
 //   - Each test drives the orb like a user (click, speak, wait) and asserts on state/history.
-// Run: pnpm test   (or: node --test tests/)
+// Run: pnpm test   (or: node --test tests/*.test.mjs)
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,11 +22,12 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = fs.readFileSync(path.join(__dirname, '../public/scripts/voice-receptionist.js'), 'utf8');
+const RECEPTIONIST_CFG_TS = fs.readFileSync(path.join(__dirname, '../src/config/receptionist.ts'), 'utf8');
 
-// Small helper: real-time sleep (the script uses real timers: 100 ms polls + 450 ms TTS tail).
+// Small helper: real-time sleep (the script uses real timers: 100 ms polls + 380 ms TTS tail).
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Time needed after TTS ends before the mic re-opens (poll + tail + margin).
-const MIC_REOPEN_MS = 750;
+const MIC_REOPEN_MS = 680;
 
 /** Builds a fresh fake browser + loads the script. Returns handles used by tests. */
 function setup({ aiReplies = [], aiChunkSplit = false } = {}) {
@@ -50,6 +55,10 @@ function setup({ aiReplies = [], aiChunkSplit = false } = {}) {
     say(text) {
       this.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: text, confidence: 0.9 }], { isFinal: true })] });
       this._end();
+    }
+    // Test helper (Spec 002 / AC-204): simulate an interim (non-final) transcript while user is still speaking.
+    sayInterim(text) {
+      this.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: text, confidence: 0.7 }], { isFinal: false })] });
     }
     // Test helper: simulate a silent window (Chrome fires onend with no result).
     silence() { this._end(); }
@@ -129,7 +138,7 @@ async function userTurn(h, text) {
 test('AC-1/AC-2: greeting plays with mic closed, then exactly one recognizer opens', async () => {
   const h = setup();
   await h.click();
-  await sleep(300);
+  await sleep(250);
   assert.equal(h.api.state, 'SPEAKING');
   assert.equal(h.recognizers.length, 0, 'no mic may open while greeting is playing');
   h.synth.finish();
@@ -225,4 +234,43 @@ test('FR-012 support: client never sends system messages to /api/chat', async ()
   await startAndGreet(h);
   await userTurn(h, 'hi there');
   assert.ok(h.chatCalls[0].messages.every((m) => m.role === 'user' || m.role === 'assistant'));
+});
+
+// -----------------------------------------------------------------------------
+// Spec 002 — Natural, Low-Latency Receptionist Conversation (AC-202 … AC-205)
+// -----------------------------------------------------------------------------
+
+test('AC-202: receptionist config has empty FEWSHOT and natural anti-pitch persona', () => {
+  assert.match(RECEPTIONIST_CFG_TS, /const\s+fewshot\s*:\s*Msg\[\]\s*=\s*\[\s*\]/, 'FEWSHOT must be empty so fake turns never hijack the conversation');
+  assert.match(RECEPTIONIST_CFG_TS, /never.*scripted.*pitch|do not.*pitch|unless.*asks/i, 'systemPrompt must forbid unprompted sales pitches');
+});
+
+test('AC-203: opening greeting is recorded in history so turn 1 has full context', async () => {
+  const h = setup({ aiReplies: ['Nice to meet you, Boris. What brings you by today?'] });
+  await startAndGreet(h);
+  assert.equal(h.api.history.length, 1, 'greeting should be in history immediately after greeting');
+  assert.equal(h.api.history[0].role, 'assistant');
+  await userTurn(h, 'Hi, I am Boris');
+  assert.equal(h.chatCalls[0].messages[0].role, 'assistant', 'first message sent to /api/chat is the assistant greeting');
+  assert.equal(h.chatCalls[0].messages[1].content, 'Hi, I am Boris');
+});
+
+test('AC-204: interim speech updates status immediately and commits after silence if isFinal lags', async () => {
+  const h = setup({ aiReplies: ['Happy to help with that.'] });
+  await startAndGreet(h);
+  const rec = h.liveRec();
+  rec.sayInterim('Hi I am Boris');
+  assert.match(h.status.textContent, /Hi I am Boris/, 'interim transcript is shown live in status');
+  // Wait for INTERIM_COMMIT_MS (700 ms) + AI fetch without calling rec.say() (isFinal never arrived)
+  await sleep(900);
+  assert.equal(h.chatCalls.length, 1, 'interim transcript committed automatically after silence');
+  assert.equal(h.chatCalls[0].messages.at(-1).content, 'Hi I am Boris');
+});
+
+test('AC-205: captured visitor name is passed in visitor metadata to /api/chat', async () => {
+  const h = setup({ aiReplies: ['Hey Boris, what are you building?'] });
+  await startAndGreet(h);
+  await userTurn(h, 'Hi, my name is Boris');
+  assert.equal(h.api.lead.name, 'Boris');
+  assert.equal(h.chatCalls[0].visitor?.name, 'Boris', 'visitor.name is sent in /api/chat payload');
 });

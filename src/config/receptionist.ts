@@ -1,6 +1,24 @@
-// src/config/receptionist.ts
-// Centralized personality, few-shots, quick-answers, and variables.
-// The ReceptionistPanel reads ONLY from this file (no hardcoding in the UI).
+// /src/config/receptionist.ts
+// -----------------------------------------------------------------------------
+// Centralized persona, reference catalog, offline fallback answers, and variables
+// for the Infusio AI Receptionist (both Hero Voice Orb and Text Panel).
+//
+// Spec:  specs/002-natural-low-latency-conversation/spec.md (FR-201, FR-202)
+//
+// WHY THIS FILE IS STRUCTURED THIS WAY (for debug operators):
+//   1. `systemPrompt` sets a natural, consultative human front-desk tone. Earlier
+//      versions prescribed a rigid 6-step sales funnel ("greet → ask name → clarify
+//      goal → pitch plan → ask email"), which made every turn feel like a canned pitch.
+//   2. `fewshot` MUST remain an empty array `[]` (FR-202 / RC-1). Previously, 16 fake
+//      user/assistant messages were prepended directly into the live `messages` array
+//      ending with the assistant asking "What's your name, and what's the best email
+//      or WhatsApp?" for the Mint Tea trial. When a real visitor said "Hi, I'm Boris",
+//      the LLM treated it as the answer to that fake turn and immediately pitched the
+//      Mint Tea trial.
+//   3. Plan names, pricing, and contact links live inside `systemPrompt` under
+//      REFERENCE FACTS so the assistant knows them when asked, without reciting them
+//      unprompted.
+// -----------------------------------------------------------------------------
 
 /** Minimal message shape compatible with openrouter.ts */
 type Msg = { role: "system" | "user" | "assistant"; content: string };
@@ -32,7 +50,7 @@ const vars: ReceptionistConfig["vars"] = {
   contact_email: "hello@infusio.pro",
   whatsapp: "+57 314 634 6617",
 
-  // Plans (brews): names + one-liners (used by instant answers)
+  // Plans (brews): names + one-liners (used when visitor asks about plans or offline fallback)
   plan_mint_en: "Mint Tea — Free Trial",
   plan_mint_es: "Té de menta — Prueba gratuita",
   plan_mint_blurb_en:
@@ -63,130 +81,34 @@ const vars: ReceptionistConfig["vars"] = {
 };
 
 /* =========================
-   System prompt (concise)
+   System prompt (FR-201: natural, consultative, non-pitchy)
    ========================= */
-// Proactive, orchestration mindset; do not invent offers; bilingual; short turns.
-// Greet warmly on the first reply only, then move the conversation forward.
 const systemPrompt: ReceptionistConfig["systemPrompt"] = [
-  "You are the Infusio Assistant — a concise, bilingual (EN/ES) receptionist that orchestrates helpful next steps.",
-  "Remember to welcome visitors and introduce yourself like a real receptionist would do, but only ONCE per conversation.",
-  "On the FIRST reply after the user’s opening message, start with a brief warm greeting (one short line), then ask exactly one clear question to move forward. Do NOT greet again later in the conversation.",
-  "Be proactive and outcomes-first: clarify needs, propose actions, and coordinate tools (email, WhatsApp, booking) when useful.",
-  "Never use personal names; always say “our team”.",
-  "Stick to the user’s initial language (EN or ES) unless they explicitly switch.",
-  "Never use emojis in any reply (voice and text).",                 // <-- added line
-  "Lead flow: greet → ask for their name → clarify the goal → propose next-step or value → then ask for email/phone → ask consent only after value is offered; one question at a time.",
-  "Only offer what Infusio provides. If unsure, say so, ask a brief clarifying question, or offer to schedule {bookingNoun_en}/{bookingNoun_es} with {teamNoun_en}/{teamNoun_es}.",
-  "Scope: fast Astro/Vercel websites; practical automations; ethical AI assistants; integrations (CRM/payments/calendars); analytics; and an operator dashboard.",
-  "We don’t provide health/wellness/spa services; we can serve those businesses with AI systems and websites. Decline tactfully and restate what we DO offer.",
-  "Ask for name and email only when relevant and after the request is clear; one short question at a time.",
-  "Keep replies to 1–2 short sentences, no markdown lists/headings, and match the user’s language (EN/ES).",
-]
-  .join(" ")
-  .replace("{bookingNoun_en}", vars.bookingNoun_en)
-  .replace("{bookingNoun_es}", vars.bookingNoun_es)
-  .replace("{teamNoun_en}", vars.teamNoun_en)
-  .replace("{teamNoun_es}", vars.teamNoun_es);
+  "You are the receptionist at Infusio, a studio that builds fast Astro/Vercel websites, AI receptionists (voice and chat), and quiet business automations (scheduling, CRM, WhatsApp, payments, and an operator dashboard).",
+  "Infusio is a software and AI studio, NOT a medical, IV-therapy, or spa clinic (though we build websites and AI systems for clinics and small businesses).",
+  "CONVERSATION STYLE: Speak naturally like a warm, perceptive human front-desk colleague. Listen to what the visitor actually said, respond directly to it, and ask at most one natural follow-up question.",
+  "ANTI-PITCH RULE: Never give a scripted sales pitch. Do NOT mention plan names (Mint Tea, Earl Grey, Matcha, Oolong), setup fees, or monthly prices unless the visitor specifically asks about plans, pricing, or a free trial.",
+  "Do NOT ask for the visitor's email, phone number, or WhatsApp on the first turn. Have a genuine conversation first; only offer to connect them with our team or book a short call once there is a clear reason or they ask.",
+  "If the visitor shares their name, greet them naturally by name once and do not ask for their name again. Do not repeat 'Hi/Hello' on follow-up turns.",
+  "Match the visitor's language (English or Spanish). Never use emojis, markdown headings, or bullet lists.",
+  "Keep replies concise: 1 to 2 short, natural sentences.",
+  `REFERENCE FACTS (use ONLY when the visitor asks about plans, pricing, trials, or contact info):`,
+  `1) ${vars.plan_mint_en}: 14-day free trial of our AI concierge screening inquiries and sending structured briefings.`,
+  `2) ${vars.plan_earl_en}: Fast Astro/Vercel website + 24/7 AI receptionist ($1,550 setup, $350/mo).`,
+  `3) ${vars.plan_matcha_en}: Bilingual concierge + automated scheduling, payments, and CRM workflows (from $2,750 setup, $550/mo).`,
+  `4) ${vars.plan_oolong_en}: Bespoke autonomous agents, voice AI, and custom workflows (from $4,000 setup).`,
+  `Contact & booking: ${vars.booking_url} | Email: ${vars.contact_email} | WhatsApp: ${vars.whatsapp}.`,
+].join(" ");
 
 /* =========================
-   Few-shots (tone & flow, with name-first + language stickiness)
+   Few-shots (FR-202: kept empty so fake turns never pollute live conversation state)
    ========================= */
-const fewshot: Msg[] = [
-  // EN — name first
-  { role: "user", content: "Hello" },
-  {
-    role: "assistant",
-    content:
-      "Hi! I’m the Infusio Assistant. What’s your name so I know who I’m helping?",
-  },
-  { role: "user", content: "I’m Alex" },
-  {
-    role: "assistant",
-    content:
-      "Nice to meet you, Alex! What’s your first goal — more leads, smoother bookings, or better payments?",
-  },
-
-  // ES — name first
-  { role: "user", content: "Hola" },
-  {
-    role: "assistant",
-    content:
-      "¡Hola! Soy el Asistente de Infusio. ¿Cómo te llamas para saber con quién hablo?",
-  },
-  { role: "user", content: "Soy Camila" },
-  {
-    role: "assistant",
-    content:
-      "¡Encantado, Camila! ¿Qué quieres lograr primero — más leads, mejores reservas o pagos más fluidos?",
-  },
-
-  // EN — free trial
-  { role: "user", content: "Do you have a free trial?" },
-  {
-    role: "assistant",
-    content:
-      "{plan_mint_en}. {plan_mint_blurb_en} I can send the access link — what’s the best email, or prefer WhatsApp?",
-  },
-
-  // ES — free trial
-  { role: "user", content: "¿Tienen prueba gratis?" },
-  {
-    role: "assistant",
-    content:
-      "{plan_mint_es}. {plan_mint_blurb_es} Puedo enviarte el acceso — ¿me pasas tu correo o prefieres WhatsApp?",
-  },
-
-  // EN — choosing plans
-  { role: "user", content: "I’m choosing between Earl Grey and Matcha." },
-  {
-    role: "assistant",
-    content:
-      "{plan_earl_en}: {plan_earl_blurb_en} {plan_matcha_en}: {plan_matcha_blurb_en} Want a quick fit check based on your goals?",
-  },
-
-  // Guardrail EN
-  { role: "user", content: "Do you do spa treatments or medical services?" },
-  {
-    role: "assistant",
-    content:
-      "We don’t provide medical or spa services. We build fast sites and AI intake/automation for those businesses. Want {bookingNoun_en} with {teamNoun_en}?",
-  },
-
-  // EN — direct first-turn ask (no name given yet)
-  { role: "user", content: "I want my free trial" },
-  {
-    role: "assistant",
-    content:
-      "Great choice — {plan_mint_en}. {plan_mint_blurb_en} I’ll send the access link. What’s your name, and what’s the best email or WhatsApp?",
-  },
-
-  // ES — direct first-turn ask (no name yet)
-  { role: "user", content: "Quiero la prueba gratis" },
-  {
-    role: "assistant",
-    content:
-      "Excelente — {plan_mint_es}. {plan_mint_blurb_es} Te envío el acceso. ¿Cómo te llamas y cuál es tu mejor correo o WhatsApp?",
-  },
-].map((m) => ({
-  ...m,
-  content: m.content
-    .replace("{plan_mint_en}", vars.plan_mint_en)
-    .replace("{plan_mint_blurb_en}", vars.plan_mint_blurb_en)
-    .replace("{plan_mint_es}", vars.plan_mint_es)
-    .replace("{plan_mint_blurb_es}", vars.plan_mint_blurb_es)
-    .replace("{plan_earl_en}", vars.plan_earl_en)
-    .replace("{plan_earl_blurb_en}", vars.plan_earl_blurb_en)
-    .replace("{plan_matcha_en}", vars.plan_matcha_en)
-    .replace("{plan_matcha_blurb_en}", vars.plan_matcha_blurb_en)
-    .replace("{bookingNoun_en}", vars.bookingNoun_en)
-    .replace("{teamNoun_en}", vars.teamNoun_en),
-}));
+const fewshot: Msg[] = [];
 
 /* =========================
-   Instant local answers (regex → EN/ES response)
+   Instant local answers (used ONLY as offline fallback if /api/chat fails)
    ========================= */
 const answers: ReceptionistConfig["answers"] = {
-  // WhatsApp number
   whatsapp_number: {
     patterns: [
       "\\b(whats ?app|wa)[\\s-]*(number|no\\.?|contact)\\b",
@@ -194,90 +116,75 @@ const answers: ReceptionistConfig["answers"] = {
       "\\b(n[uú]mero|numero) de[\\s-]*(whats ?app|wa)\\b",
     ],
     responses: {
-      en: "Of course — here’s our WhatsApp: {whatsapp}. Send “Free trial” and our team will set you up quickly.",
-      es: "Claro — este es nuestro WhatsApp: {whatsapp}. Envía “Prueba gratis” y nuestro equipo te ayuda en minutos.",
+      en: "Of course — our WhatsApp is {whatsapp}. Feel free to message us there anytime.",
+      es: "Claro — nuestro WhatsApp es {whatsapp}. Escríbenos por ahí cuando quieras.",
     },
   },
-
-  // Scheduling CTA
   schedule_call: {
     patterns: [
       "\\b(schedule|book|set|arrange|organize) (a )?(call|meeting)\\b",
       "\\b(agendar|programar|reservar).*(llamada|reuni[oó]n)\\b",
     ],
     responses: {
-      en: "Happy to help — I can schedule {bookingNoun_en} with {teamNoun_en}. Use {booking_url} or share a time window.",
-      es: "Con gusto — agendo {bookingNoun_es} con {teamNoun_es}. Usa {booking_url} o dime un horario.",
+      en: "Happy to help — you can grab a time at {booking_url} or tell me what day works for you.",
+      es: "Con gusto — puedes elegir horario en {booking_url} o decirme qué día te queda bien.",
     },
   },
-
-  // Contact email
   contact_email: {
     patterns: ["\\b(email|correo)(\\s*(address|electr[oó]nico))?\\b"],
     responses: {
-      en: "You can also reach us at {contact_email}.",
-      es: "También puedes escribirnos a {contact_email}.",
+      en: "You can reach us at {contact_email}.",
+      es: "Puedes escribirnos a {contact_email}.",
     },
   },
-
-  // Clear redirect for non-offer areas
   medical_redirect: {
     patterns: ["\\b(spa|massage|medic(al|ina)|clinic|wellness|therap(y|ia))\\b"],
     responses: {
-      en: "We don’t provide medical or spa services. We focus on fast sites, automations and AI assistants for business.",
-      es: "No ofrecemos servicios médicos ni de spa. Nos enfocamos en sitios rápidos, automatizaciones y asistentes de IA para negocios.",
+      en: "We don’t provide medical or spa treatments — we build fast websites and AI receptionists for businesses.",
+      es: "No ofrecemos tratamientos médicos ni de spa — creamos sitios rápidos y recepcionistas con IA para negocios.",
     },
   },
-
-  // Plan info lookups (Mint / Earl Grey / Matcha / Oolong) — warmed up
   plan_mint: {
     patterns: ["\\b(mint tea|mint|free trial|trial)\\b", "\\b(t[eé] de menta|prueba|gratis)\\b"],
     responses: {
-      en: "Hi! {plan_mint_en}: {plan_mint_blurb_en} Want me to send the access link by email, or prefer WhatsApp?",
-      es: "¡Hola! {plan_mint_es}: {plan_mint_blurb_es} ¿Te envío el acceso por correo o prefieres WhatsApp?",
+      en: "{plan_mint_en}: {plan_mint_blurb_en}",
+      es: "{plan_mint_es}: {plan_mint_blurb_es}",
     },
   },
   plan_earl: {
     patterns: ["\\b(earl\\s*grey|starter|base)\\b", "\\b(t[eé]\\s*earl\\s*grey|inicio|base)\\b"],
     responses: {
-      en: "Hi! {plan_earl_en}: {plan_earl_blurb_en} Want a quick fit check on your goals?",
-      es: "¡Hola! {plan_earl_es}: {plan_earl_blurb_es} ¿Hacemos una verificación rápida según tus metas?",
+      en: "{plan_earl_en}: {plan_earl_blurb_en}",
+      es: "{plan_earl_es}: {plan_earl_blurb_es}",
     },
   },
   plan_matcha: {
     patterns: ["\\b(matcha|growth)\\b", "\\b(t[eé]\\s*matcha|crecimiento)\\b"],
     responses: {
-      en: "Hi! {plan_matcha_en}: {plan_matcha_blurb_en} Want me to outline next steps?",
-      es: "¡Hola! {plan_matcha_es}: {plan_matcha_blurb_es} ¿Te detallo próximos pasos?",
+      en: "{plan_matcha_en}: {plan_matcha_blurb_en}",
+      es: "{plan_matcha_es}: {plan_matcha_blurb_es}",
     },
   },
   plan_oolong: {
     patterns: ["\\b(oolong|bespoke|r&d|research)\\b", "\\b(t[eé]\\s*oolong|a la medida|i\\s*\\+\\s*d)\\b"],
     responses: {
-      en: "Hi! {plan_oolong_en}: {plan_oolong_blurb_en} Want to start with a short scoping call?",
-      es: "¡Hola! {plan_oolong_es}: {plan_oolong_blurb_es} ¿Arrancamos con una llamada corta de alcance?",
+      en: "{plan_oolong_en}: {plan_oolong_blurb_en}",
+      es: "{plan_oolong_es}: {plan_oolong_blurb_es}",
     },
   },
-
-  // Generic “which plan?”
   which_plan: {
     patterns: ["\\b(which|what).*plan\\b", "\\b(cu[aá]l).*plan\\b", "\\b(choose|elige|recomendaci[oó]n).*plan\\b"],
     responses: {
-      en: "Hi! Quick guide — Mint (free trial), Earl Grey (starter), Matcha (growth), Oolong (bespoke). Want me to recommend one based on leads, bookings or payments?",
-      es: "¡Hola! Guía rápida — Menta (prueba), Earl Grey (inicio), Matcha (crecimiento), Oolong (a medida). ¿Te recomiendo según leads, reservas o pagos?",
+      en: "We have four options: Mint (14-day free trial), Earl Grey (starter site + AI), Matcha (growth automations), and Oolong (bespoke R&D). What are you building?",
+      es: "Tenemos cuatro opciones: Menta (prueba de 14 días), Earl Grey (sitio + IA inicial), Matcha (automatizaciones de crecimiento) y Oolong (a medida). ¿Qué estás construyendo?",
     },
   },
 };
 
-/* =========================
-   Export single config
-   ========================= */
 const config: ReceptionistConfig = { systemPrompt, fewshot, answers, vars };
 export default config;
 
-// Named exports for /api/chat.ts
 export const SYSTEM  = systemPrompt;
 export const FEWSHOT = fewshot;
-// (optional) expose these if needed elsewhere
 export const ANSWERS = answers;
 export const VARS    = vars;

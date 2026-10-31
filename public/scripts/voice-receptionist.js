@@ -1,20 +1,26 @@
 // /public/scripts/voice-receptionist.js
 // -----------------------------------------------------------------------------
 // Infusio hero "voice orb" receptionist (browser-side).
-// Spec:  specs/001-voice-receptionist-reliability/spec.md   (FR-001 … FR-014)
-// Tests: tests/voice-receptionist.test.mjs                  (AC-1 … AC-10)
+// Specs:
+//   - specs/001-voice-receptionist-reliability/spec.md         (FR-001 … FR-014)
+//   - specs/002-natural-low-latency-conversation/spec.md       (FR-201 … FR-207)
+// Tests:
+//   - tests/voice-receptionist.test.mjs                        (AC-1 … AC-10, AC-202 … AC-206)
 //
 // HOW IT WORKS (read this first when debugging):
 //   The orb is a strict HALF-DUPLEX state machine. Only one thing happens at a time:
 //
-//     IDLE ──tap──► SPEAKING ──TTS done + silence tail──► LISTENING ──final result──► THINKING
-//      ▲               ▲                                      │                         │
-//      │               └──────────────── reply ready ─────────┼─────────────────────────┘
+//     IDLE ──tap──► SPEAKING ──TTS done + silence tail──► LISTENING ──utterance──► THINKING
+//      ▲               ▲                                      │                       │
+//      │               └──────────────── reply ready ─────────┼───────────────────────┘
 //      └──── tap (while LISTENING/THINKING) or 4 silent windows ┘
 //
 //   - The microphone (SpeechRecognition) is opened ONLY by startListening(), and only
-//     after speechSynthesis is fully silent + a short tail. This is what prevents the
-//     assistant from hearing its own voice (the old "answering loop").
+//     after speechSynthesis is fully silent + a short tail (TTS_TAIL_MS). This prevents
+//     the assistant from hearing its own voice (the old "answering loop").
+//   - Live interim transcripts (FR-206) update `#voice-status` as the user speaks
+//     (~100 ms feedback) and auto-commit after INTERIM_COMMIT_MS (700 ms) of pause
+//     if the browser's remote STT service lags on sending `isFinal: true`.
 //   - Every recognizer instance gets a generation id (recGen). Events from older
 //     instances are ignored, so late/duplicate browser events cannot hijack the flow.
 //   - Every session gets an id (session). Async work (fetch, timers) checks it and
@@ -23,7 +29,7 @@
 // DEBUGGING:
 //   - Add ?voicedebug=1 to the URL (or run localStorage.voiceDebug = '1') to see
 //     "[voice]" logs for every state change, mic open/close, and AI call.
-//   - In the console, window.__infusioVoice exposes { state, history, lead } live.
+//   - In the console, window.__infusioVoice exposes { state, lang, history, lead }.
 // -----------------------------------------------------------------------------
 (() => {
   'use strict';
@@ -49,14 +55,15 @@
   // 2) Tunables — every timing below exists to prevent a specific, observed symptom.
   // ---------------------------------------------------------------------------
   const CFG = {
-    TTS_TAIL_MS: 450,          // FR-002: wait after TTS ends before opening mic (speaker/room reverb decay).
-    TTS_POLL_MS: 100,          // FR-002: how often we re-check speechSynthesis.speaking while waiting.
-    RESTART_DELAY_MS: 250,     // Gap between silent listening windows (Chrome throws if restarted instantly).
+    TTS_TAIL_MS: 380,          // FR-002: wait after TTS ends before opening mic (speaker/room reverb decay).
+    TTS_POLL_MS: 80,           // FR-002: how often we re-check speechSynthesis.speaking while waiting.
+    INTERIM_COMMIT_MS: 700,    // FR-206: commit interim speech if browser STT lags >700 ms after user pauses.
+    RESTART_DELAY_MS: 220,     // Gap between silent listening windows (Chrome throws if restarted instantly).
     MAX_SILENT_WINDOWS: 4,     // FR-011: end the session after this many windows with no speech (~30 s).
     AI_TIMEOUT_MS: 15000,      // FR-007: abort /api/chat if the model hangs.
-    VOICES_TIMEOUT_MS: 1500,   // FR-009: never wait forever for the voiceschanged event.
+    VOICES_TIMEOUT_MS: 1200,   // FR-009: never wait forever for the voiceschanged event.
     MAX_HISTORY: 10,           // Turns sent to the server (server also caps at 10).
-    MAX_REPLY_SENTENCES: 3,    // Keep spoken replies short; long TTS = more chance of echo + boredom.
+    MAX_REPLY_SENTENCES: 2,    // Keep spoken replies conversational and quick to speak aloud.
   };
 
   // ---------------------------------------------------------------------------
@@ -74,6 +81,7 @@
   let session = 0;             // Incremented on every start/stop; async callbacks compare against it.
   let recGen = 0;              // FR-003: generation id of the current recognizer instance.
   let rec = null;              // Current SpeechRecognition instance (one per listening window).
+  let interimTimer = null;     // FR-206: timer that commits stable interim speech if `isFinal` lags.
   let currentUtterance = null; // Strong ref to the playing utterance (Chrome GC bug can drop onend otherwise).
   let ttsWatchdog = null;      // Fallback timer in case the browser never fires utterance.onend.
   let lastTtsEndAt = 0;        // Timestamp when TTS last stopped; used for the silence tail.
@@ -93,7 +101,7 @@
   const isES = () => lang.startsWith('es');
   const t = (en, es) => (isES() ? es : en); // tiny i18n helper for UI/status strings
   const looksSpanish = (s) => /[áéíóúñ¿¡]/i.test(s) ||
-    /\b(hola|gracias|quiero|necesito|tienen|hacen|sitio|página|cuánto|cómo|qué|por favor|buenas?|correo)\b/i.test(s);
+    /\b(hola|gracias|quiero|necesito|tienen|hacen|sitio|página|cuánto|cómo|qué|por favor|buenas?|correo|soy|me llamo)\b/i.test(s);
 
   function updateLanguage(utter) {
     if (/\b(english|in english|en inglés)\b/i.test(utter)) { lang = 'en-US'; langLocked = true; return; }
@@ -131,6 +139,7 @@
 
   // FR-009: resolve as soon as voices exist, or after VOICES_TIMEOUT_MS no matter what.
   function loadVoices() {
+    if (voices.length) return Promise.resolve();
     return new Promise((resolve) => {
       const now = synth?.getVoices?.() || [];
       if (now.length) { voices = now; return resolve(); }
@@ -161,7 +170,7 @@
       .trim();
   }
 
-  // Keep the first N sentences so spoken replies stay short.
+  // Keep the first N sentences so spoken replies stay short and snappy.
   function limitSentences(text, n = CFG.MAX_REPLY_SENTENCES) {
     const parts = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
     return parts.slice(0, n).join(' ').replace(/\s+/g, ' ').trim();
@@ -191,7 +200,7 @@
 
     const u = new SpeechSynthesisUtterance(clean);
     u.lang = lang;
-    u.rate = 1.0;
+    u.rate = 1.03; // Slightly brisker natural conversational pace
     u.pitch = 1.0;
     const v = pickVoice(lang);
     if (v) u.voice = v;
@@ -218,7 +227,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // 8) Speech recognition (microphone) — FR-002 / FR-003 / FR-011
+  // 8) Speech recognition (microphone) — FR-002 / FR-003 / FR-011 / FR-206
   // ---------------------------------------------------------------------------
 
   // Resolve when TTS is fully silent AND the reverb tail has passed.
@@ -240,6 +249,8 @@
 
   // Close (abort) the current recognizer and invalidate its events by bumping recGen.
   function closeMic(reason) {
+    clearTimeout(interimTimer);
+    interimTimer = null;
     if (!rec) return;
     log('mic close:', reason);
     const r = rec;
@@ -263,27 +274,54 @@
     rec = r;
     r.lang = lang;
     r.continuous = false;      // one utterance per window → clean turn-taking
-    r.interimResults = false;  // final results only (interim results caused partial-sentence replies)
+    r.interimResults = true;   // FR-206: show live words immediately & commit after pause if isFinal lags
     r.maxAlternatives = 1;
     let gotResult = false;
+    let latestInterim = '';
 
     const isStale = () => myGen !== recGen || mySession !== session;
+
+    const commitTranscript = (text, source) => {
+      if (gotResult || isStale() || state !== STATES.LISTENING) return;
+      const trimmed = (text || '').trim();
+      if (!trimmed) return;
+      clearTimeout(interimTimer);
+      interimTimer = null;
+      gotResult = true;
+      silentWindows = 0;
+      log(`commit (${source}):`, trimmed);
+      handleUtterance(trimmed);
+    };
 
     r.onstart = () => { if (!isStale()) log('mic open (gen', myGen + ')', 'lang', r.lang); };
 
     r.onresult = (ev) => {
       if (isStale() || state !== STATES.LISTENING) { log('ignored stale/late result'); return; }
-      // Collect final transcript(s) of this window.
-      let text = '';
+      let finalText = '';
+      let interimText = '';
       for (let i = ev.resultIndex || 0; i < ev.results.length; i++) {
         const res = ev.results[i];
-        if (res.isFinal !== false) text += (res[0]?.transcript || '') + ' ';
+        const chunk = (res[0]?.transcript || '');
+        if (res.isFinal !== false) finalText += chunk + ' ';
+        else interimText += chunk + ' ';
       }
-      text = text.trim();
-      if (!text) return;
-      gotResult = true;
-      silentWindows = 0;
-      handleUtterance(text);
+      finalText = finalText.trim();
+      interimText = interimText.trim();
+
+      if (finalText) {
+        commitTranscript(finalText, 'isFinal');
+        return;
+      }
+
+      // FR-206: Live interim visual feedback + fast silence commit timer.
+      if (interimText) {
+        latestInterim = interimText;
+        setStatus(`“${interimText}…”`);
+        clearTimeout(interimTimer);
+        interimTimer = setTimeout(() => {
+          commitTranscript(latestInterim, 'interim-silence');
+        }, CFG.INTERIM_COMMIT_MS);
+      }
     };
 
     r.onerror = (ev) => {
@@ -300,6 +338,11 @@
     r.onend = () => {
       if (isStale()) return;
       rec = null;
+      // If the recognizer ended while we were holding un-committed interim speech, commit it now.
+      if (!gotResult && latestInterim && state === STATES.LISTENING) {
+        commitTranscript(latestInterim, 'onend-interim');
+        return;
+      }
       if (state !== STATES.LISTENING || gotResult) return; // result is being handled elsewhere
       silentWindows++;
       log('silent window', silentWindows, '/', CFG.MAX_SILENT_WINDOWS);
@@ -332,15 +375,26 @@
     turns.push({ who: 'user', text });
     log('user said:', text);
 
-    // (a) Local lead-capture side flow (FR-005, FR-013). Returns a reply or null.
+    // (a) Local lead-capture side flow (FR-005, FR-013, FR-204).
+    //     Also opportunistically populates lead.name / lead.phone before /api/chat.
     const local = handleLeadCapture(text);
-    if (local) { await speak(local); return; }
+    if (local) {
+      history.push({ role: 'user', content: text });
+      history.push({ role: 'assistant', content: local });
+      await speak(local);
+      return;
+    }
 
     // (b) Everything else goes to the AI.
     history.push({ role: 'user', content: text });
     let reply = '';
     try {
-      reply = await askAI();
+      // FR-207: show streaming words in #voice-status as soon as tokens arrive (~400–600 ms TTFT).
+      reply = await askAI((partial) => {
+        if (mySession === session && state === STATES.THINKING) {
+          setStatus(cleanForSpeech(partial).slice(0, 90));
+        }
+      });
     } catch (e) {
       log('AI error:', e?.name || e?.message || e);
     }
@@ -364,7 +418,8 @@
   const EMAIL_CUE = /@|\b(e-?mail|correo|arroba|gmail|hotmail|outlook|yahoo|icloud|proton)\b|\bdot com\b|\bpunto com\b/i;
   const YES_RE = /^\s*(yes|yeah|yep|correct|right|that'?s right|exactly|sí|si|claro|correcto|exacto|así es|eso es)\b/i;
   const NO_RE = /^\s*(no|nope|wrong|incorrect|incorrecto|no es)\b/i;
-  const NAME_RE = /\b(?:my name is|i am|i'm|this is|soy|me llamo|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,})/iu;
+  const NAME_RE = /\b(?:my name is|i am|i'm|i’m|this is|soy|me llamo|mi nombre es)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ][\p{L}'-]{1,})/iu;
+  const NAME_STOP = new Set(['interested', 'looking', 'calling', 'here', 'fine', 'good', 'ready', 'curious', 'checking', 'just', 'not', 'sure']);
 
   // Turn spoken email ("boris at gmail dot com", "b o r i s arroba gmail punto com") into text.
   function spokenToEmail(s) {
@@ -383,10 +438,17 @@
     return (x.match(EMAIL_RE) || [null])[0];
   }
 
-  /** Returns a local reply string if this utterance was a lead-capture turn, else null. */
+  /** Returns a local reply string if this utterance was an email confirm turn, else null. */
   function handleLeadCapture(text) {
     // Opportunistic, silent captures (never block the conversation).
-    if (!lead.name) { const m = text.match(NAME_RE); if (m) lead.name = m[1]; }
+    if (!lead.name) {
+      const m = text.match(NAME_RE);
+      const candidate = m ? m[1].trim() : '';
+      if (candidate && !NAME_STOP.has(candidate.toLowerCase())) {
+        lead.name = candidate[0].toUpperCase() + candidate.slice(1);
+        log('captured visitor name:', lead.name);
+      }
+    }
     if (!lead.phone) {
       const digits = (text.match(/\+?\d[\d\s().-]{6,}\d/) || [''])[0].replace(/[^\d+]/g, '');
       if (digits.replace(/\D/g, '').length >= 7) lead.phone = digits; // FR-013: ≥7 literal digits
@@ -405,8 +467,8 @@
         lead.email = pendingEmail;
         pendingEmail = '';
         sendLead();
-        return t("Perfect, thanks! We'll send the calendar invite there. Anything else I can help with?",
-                 '¡Perfecto, gracias! Enviaremos la invitación ahí. ¿Algo más en lo que te ayude?');
+        return t("Perfect, thanks! We'll send the details there. What else can I help you with?",
+                 '¡Perfecto, gracias! Te enviaremos los detalles ahí. ¿En qué más te puedo ayudar?');
       }
       if (NO_RE.test(text)) {
         pendingEmail = '';
@@ -445,16 +507,21 @@
   // ---------------------------------------------------------------------------
   // 11) AI call — POST /api/chat, stream SSE, return the full reply text.
   // ---------------------------------------------------------------------------
-  async function askAI() {
+  async function askAI(onProgress) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), CFG.AI_TIMEOUT_MS); // FR-007
     try {
-      log('AI request, turns:', history.length);
+      log('AI request, turns:', history.length, 'visitor:', lead.name || '(anon)');
       const res = await fetch(CHAT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // FR-012: only user/assistant turns; the server owns the persona/system prompt.
-        body: JSON.stringify({ mode: 'voice', locale: lang, messages: history.slice(-CFG.MAX_HISTORY) }),
+        // FR-012 + FR-204: only user/assistant turns + structured visitor metadata.
+        body: JSON.stringify({
+          mode: 'voice',
+          locale: lang,
+          visitor: { name: lead.name, email: lead.email, phone: lead.phone },
+          messages: history.slice(-CFG.MAX_HISTORY),
+        }),
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
@@ -476,9 +543,16 @@
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop(); // keep the (possibly partial) last line for the next chunk
-        for (const line of lines) full += parseSseLine(line);
+        for (const line of lines) {
+          const piece = parseSseLine(line);
+          if (piece) {
+            full += piece;
+            if (onProgress) onProgress(full);
+          }
+        }
       }
-      full += parseSseLine(buffer); // flush whatever is left
+      const tail = parseSseLine(buffer);
+      if (tail) full += tail;
       return full.trim();
     } finally {
       clearTimeout(timer);
@@ -499,7 +573,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // 12) Session control — start / stop / barge-in (FR-010)
+  // 12) Session control — start / stop / barge-in (FR-010, FR-203)
   // ---------------------------------------------------------------------------
   function startConversation() {
     session++;
@@ -507,9 +581,14 @@
     log('session start', session);
     if (!greeted) {
       greeted = true;
-      // Speak synchronously within the click (user activation) so browsers allow TTS.
-      speak(t("Hi, I'm the Infusio assistant. How can I help you today?",
-              'Hola, soy el asistente de Infusio. ¿En qué te puedo ayudar hoy?'));
+      const greeting = t(
+        "Hi, I'm the Infusio assistant. How can I help you today?",
+        'Hola, soy el asistente de Infusio. ¿En qué te puedo ayudar hoy?'
+      );
+      // FR-203: Record the spoken greeting in history so the LLM knows on turn 1
+      // that it already greeted the visitor and asked how it can help.
+      history.push({ role: 'assistant', content: greeting });
+      speak(greeting);
     } else {
       goListen('session restart');
     }

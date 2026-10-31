@@ -179,13 +179,6 @@ const CLIENT_CFG = {
     }
 
     if (changed) persist();
-
-    // if we just learned the name, push a tiny non-invasive hint so the model doesn't ask again
-    if (state.name && !state._hintName){
-      history.push({ role:'system', content:`The user's name is ${state.name}. Do not ask for their name again.` });
-      state._hintName = true;
-      persist();
-    }
   }
 
   // Ask consent once (after we have an email/phone) — disabled for demo via query param
@@ -284,10 +277,16 @@ const CLIENT_CFG = {
   async function streamAI(){
     const b = typingBubble();
     try{
+      // Spec 002 / FR-204: pass structured visitor metadata (name/email/phone)
+      // so the server can include it in the server-owned persona context.
       const res = await fetch(chatURL, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ messages: history })
+        body: JSON.stringify({
+          mode: 'text',
+          visitor: { name: state.name, email: state.email, phone: state.phone },
+          messages: history.filter(m => m.role === 'user' || m.role === 'assistant')
+        })
       });
 
       let full = '';
@@ -296,23 +295,30 @@ const CLIENT_CFG = {
       if (ct.includes('text/event-stream') && res.body){
         const reader = res.body.getReader();
         const dec = new TextDecoder();
+        // Spec 001 / FR-008: buffer incomplete SSE lines across network chunks.
+        let buffer = '';
+        const consumeLine = (line) => {
+          const s = line.trim();
+          if (!s.startsWith('data:')) return;
+          const data = s.slice(5).trim();
+          if (!data || data === '[DONE]') return;
+          const piece = extractChunk(data);
+          if (piece){
+            if (b.classList.contains('typing')) { b.classList.remove('typing'); b.textContent = ''; }
+            full += piece;
+            b.textContent = full;
+            log.scrollTop = log.scrollHeight;
+          }
+        };
         while (true){
           const { value, done } = await reader.read();
           if (done) break;
-          const chunk = dec.decode(value, { stream:true });
-          for (const line of chunk.split('\n')){
-            if (!line.startsWith('data:')) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
-            const piece = extractChunk(data);
-            if (piece){
-              if (b.classList.contains('typing')) { b.classList.remove('typing'); b.textContent = ''; }
-              full += piece;
-              b.textContent = full;
-              log.scrollTop = log.scrollHeight;
-            }
-          }
+          buffer += dec.decode(value, { stream:true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) consumeLine(line);
         }
+        if (buffer) consumeLine(buffer);
       } else {
         try{
           const j = await res.json();
